@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SaaS 插件对接模拟器 (WhatsApp 视角)</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: #e5ddd5; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .chat-container { 
+            width: 450px; 
+            background: white; 
+            border-radius: 12px; 
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15); 
+            overflow: hidden; 
+            display: flex; 
+            flex-direction: column; 
+            height: 80vh; 
+            max-height: 800px;
+        }
+        .header { 
+            background: #075e54; 
+            color: white; 
+            padding: 15px 20px; 
+            font-weight: bold; 
+            text-align: center; 
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .header-title {
+            font-size: 16px;
+        }
+        .status { 
+            font-size: 12px; 
+            color: #dcf8c6; 
+            font-weight: normal; 
+        }
+        .messages { 
+            flex: 1; 
+            padding: 20px; 
+            overflow-y: auto; 
+            background: #efeae2; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 12px; 
+            /* 添加一点类似 WA 的背景纹理颜色 */
+            background-color: #e5ddd5;
+        }
+        .msg { 
+            padding: 10px 14px; 
+            border-radius: 8px; 
+            max-width: 80%; 
+            word-wrap: break-word; 
+            font-size: 15px; 
+            line-height: 1.4;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1); 
+            position: relative;
+        }
+        .visitor-msg { 
+            background: #fff; 
+            align-self: flex-start; 
+            border-top-left-radius: 0; 
+        }
+        .ai-msg { 
+            background: #dcf8c6; 
+            align-self: flex-end; 
+            border-top-right-radius: 0; 
+        }
+        .typing-indicator {
+            font-style: italic;
+            color: #667781;
+        }
+        .input-area { 
+            display: flex; 
+            padding: 12px 15px; 
+            background: #f0f0f0; 
+            align-items: center;
+        }
+        input { 
+            flex: 1; 
+            padding: 12px 15px; 
+            border: none; 
+            border-radius: 24px; 
+            outline: none; 
+            font-size: 15px; 
+            background: #ffffff;
+        }
+        button { 
+            background: #128C7E; 
+            color: white; 
+            border: none; 
+            padding: 12px 20px; 
+            margin-left: 10px; 
+            border-radius: 24px; 
+            cursor: pointer; 
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #0d6b60;
+        }
+    </style>
+</head>
+<body>
+
+<div class="chat-container">
+    <div class="header">
+        <span class="header-title">模拟访客会话窗 (对接 SaaS 引擎)</span>
+        <span class="status" id="ws-status">🟡 插件正在连接云端大脑...</span>
+    </div>
+    <div class="messages" id="chat-box">
+        <!-- 聊天记录将展示在这里 -->
+        <div class="msg ai-msg">
+            你好！我是测试客服。请在下方输入框发送消息开始测试。你可以尝试告诉我你的名字、预算和痛点，看看我能不能记住！
+        </div>
+    </div>
+    <div class="input-area">
+        <input type="text" id="msg-input" placeholder="模拟访客发送消息..." onkeypress="handleEnter(event)">
+        <button onclick="simulateVisitorSend()">发送</button>
+    </div>
+</div>
+
+<script>
+    // ==========================================
+    // 1. 核心配置 (对齐数据库测试数据)
+    // ==========================================
+    const orgId = "org_123";
+    const empId = "emp_ai_001";     // 对应数据库里的 AI 销售 ID
+    const sessionId = "sess_001";   // 对应测试的会话 ID
+    const visitorUid = "uid_999";   // Mem0 用来隔离不同访客记忆的唯一 ID
+    
+    let ws;
+    
+    // ==========================================
+    // 2. WebSocket 连接逻辑
+    // ==========================================
+    function connectWS() {
+        // 连接到 FastAPI 后端
+        ws = new WebSocket(`ws://127.0.0.1:8000/ws/${orgId}/${empId}`);
+        
+        ws.onopen = () => {
+            document.getElementById('ws-status').innerText = "🟢 插件已成功连接 AI 大脑";
+            console.log("WebSocket 连接成功！");
+        };
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            console.log("插件收到后台指令:", data);
+            
+            // 接收到后端确认消息 (ACK)
+            if (data.action === "ack") {
+                console.log("后端已收到消息，正在思考中...");
+            }
+            
+            // 接收到大模型生成的回复指令
+            if (data.action === "inject_reply") {
+                injectAIMessage(data.data.text);
+            }
+        };
+        
+        ws.onclose = () => {
+            document.getElementById('ws-status').innerText = "🔴 连接已断开，3秒后尝试重连...";
+            console.log("WebSocket 连接断开，准备重连...");
+            setTimeout(connectWS, 3000);
+        };
+
+        ws.onerror = (error) => {
+            console.error("WebSocket 发生错误:", error);
+        };
+    }
+
+    // 启动连接
+    connectWS();
+
+    // ==========================================
+    // 3. 页面交互模拟逻辑
+    // ==========================================
+    const chatBox = document.getElementById('chat-box');
+    const input = document.getElementById('msg-input');
+
+    function handleEnter(e) {
+        if (e.key === 'Enter') simulateVisitorSend();
+    }
+
+    // 模拟：访客在网页上发了一条消息，插件抓取并上报给后端
+    function simulateVisitorSend() {
+        const text = input.value.trim();
+        if (!text) return;
+
+        // 1. 在本地屏幕上渲染访客发出的消息
+        appendMessage(text, 'visitor-msg');
+        input.value = '';
+
+        // 2. 检查 WebSocket 状态
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            alert("WebSocket 未连接，请确保 FastAPI 后端已启动并在 8000 端口运行！");
+            return;
+        }
+
+        // 3. 构造 Payload 发送给 FastAPI 后端
+        const payload = {
+            action: "new_visitor_message",
+            payload: {
+                session_id: sessionId,
+                text: text,
+                visitor_uid: visitorUid // 这个极其重要，Mem0 靠它认人！
+            }
+        };
+        
+        console.log("向上游发送消息 payload:", payload);
+        ws.send(JSON.stringify(payload));
+    }
+
+    // 模拟：插件执行底层回填（模拟打字效果）
+    function injectAIMessage(text) {
+        // 先渲染一个“正在输入...”的占位符
+        const typingId = "typing_" + Date.now();
+        appendMessage('<span class="typing-indicator">正在输入...</span>', 'ai-msg', typingId);
+        
+        // 模拟打字延迟后，把占位符替换为真实的 AI 回复文本
+        setTimeout(() => {
+            const typingEl = document.getElementById(typingId);
+            if(typingEl) {
+                // 将 Markdown 的换行符转为 HTML 的 <br> 方便显示
+                typingEl.innerHTML = text.replace(/\n/g, '<br>');
+            }
+            // 滚动到底部
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }, 1000); // 模拟 1 秒的物理按键延迟
+    }
+
+    // 辅助函数：向聊天框添加气泡
+    function appendMessage(htmlContent, className, id = null) {
+        const div = document.createElement('div');
+        div.className = `msg ${className}`;
+        div.innerHTML = htmlContent;
+        if (id) div.id = id;
+        chatBox.appendChild(div);
+        
+        // 自动滚动到最新消息
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+</script>
+
+</body>
+</html>
