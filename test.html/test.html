@@ -144,7 +144,7 @@
     // ==========================================
     function connectWS() {
         // 连接到 FastAPI 后端
-        ws = new WebSocket(`ws://127.0.0.1:8000/ws/${orgId}/${empId}`);
+        ws = new WebSocket(`ws://127.0.0.1:1081/ws/${orgId}/${empId}`);
         
         ws.onopen = () => {
             document.getElementById('ws-status').innerText = "🟢 插件已成功连接 AI 大脑";

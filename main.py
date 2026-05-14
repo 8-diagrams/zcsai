@@ -10,6 +10,9 @@ from mem0 import Memory
 from openai import AsyncOpenAI
 import sys 
 from loguru import logger
+import traceback
+
+import UtilMem
 
 
 # 移除默认配置
@@ -34,6 +37,7 @@ class Settings(BaseSettings):
     # 指定从 .env 文件读取
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+YQrequirement="""角色: 你是一个有高中学历的真人,请用最简洁的话直接回答问题或者提出问题, 不要发挥 """
 # 实例化配置对象
 settings = Settings()
 
@@ -82,6 +86,8 @@ llm_client = AsyncOpenAI(
     base_url=settings.LLM_BASE_URL
 )
 
+mem0_llm_model = 'gpt-4o-mini'
+
 mem0_config = {
     "vector_store": {
         "provider": "qdrant",
@@ -95,15 +101,16 @@ mem0_config = {
         "config": {
             "api_key": settings.LLM_API_KEY,
             # 如果你用的是国内代理或私有部署，需要把 base_url 也传给它
-            # "openai_base_url": settings.LLM_BASE_URL, 
-            "model": settings.LLM_MODEL_NAME
+            "openai_base_url": settings.LLM_BASE_URL, 
+            "model": mem0_llm_model,
+            "temperature": 0.1
         }
     },
     "embedder": {
         "provider": "openai",
         "config": {
             "api_key": settings.LLM_API_KEY,
-            # "openai_base_url": settings.LLM_BASE_URL,
+            "openai_base_url": settings.LLM_BASE_URL,
             # 默认使用 OpenAI 的小模型作为向量转化器，极便宜
             "model": settings.LLM_EMBEDDING_MODEL, 
         }
@@ -177,30 +184,34 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                     stages = json.loads(act.stages_config) if act.stages_config else {}
                     current_guideline = stages.get(sess.current_stage, "自由交流")
             
-            log.info(f"📋 活动剧本: [{activity_name}] | 当前阶段: [{sess.current_stage}]")
+            log.info(f"📋  活动剧本: [{activity_name}] | 当前阶段: [{sess.current_stage}]")
 
             # C. 检索 Mem0 记忆
             log.debug("正在调用 Mem0 检索长期记忆...")
             try:
-                relevant_memories = visitor_memory_layer.search(query=visitor_msg, user_id=visitor_uid)
-                memory_context = "\n".join([m['memory'] for m in relevant_memories]) if relevant_memories else "空"
+                relevant_memories = visitor_memory_layer.search(query=visitor_msg, filters={"user_id": visitor_uid} )
+                memory_context = UtilMem.ProcMem( relevant_memories , log=log)
                 log.success(f"💡 唤醒记忆成功，条数: {len(relevant_memories)}")
             except Exception as me:
-                log.warning(f"⚠️ Mem0 检索失败 (可能是首次连接): {me}")
+                log.warning(f"⚠️ Mem0 检索失败 (可能是首次连接): {me}  {traceback.format_exc()} ")
                 memory_context = "暂无"
 
             # D. 调用大模型
             log.info("📡 正在呼叫云端大模型 (LLM)...")
             start_time = asyncio.get_event_loop().time()
-            
+
+            messages=[
+                {"role": "system", "content": f"你是一个金牌客服, {YQrequirement}。剧本任务：{current_guideline}。记忆：{memory_context}"},
+                {"role": "user", "content": visitor_msg}
+            ]
+            log.info(f"LLM message {messages}")
             response = await llm_client.chat.completions.create(
                 model=settings.LLM_MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": f"你是一个金牌客服。剧本任务：{current_guideline}。记忆：{memory_context}"},
-                    {"role": "user", "content": visitor_msg}
-                ],
-                max_tokens=150
+                messages=messages,
+                max_tokens=2000,
+                temperature=0.7
             )
+            log.info(f"LLM resp { response }")
             ai_reply_text = response.choices[0].message.content.strip()
             
             duration = asyncio.get_event_loop().time() - start_time
@@ -214,11 +225,29 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             ))
             await db.commit()
 
+            # ==========================================
+            # F. 记忆刻录 (极其关键：让 Mem0 吸收新知识)
+            # ==========================================
+            log.debug("🧠 正在将本轮对话喂给 Mem0 进行画像提取...")
+            try:
+                # 把用户说的话和 AI 的回复一起扔给 Mem0，它会在后台自动提取并更新画像
+                visitor_memory_layer.add(
+                    [
+                        {"role": "user", "content": visitor_msg}, 
+                        {"role": "assistant", "content": ai_reply_text}
+                    ],
+                    user_id=visitor_uid
+                )
+                log.success("🧠 Mem0 记忆刻录完成！")
+            except Exception as e:
+                log.warning(f"⚠️ Mem0 刻录记忆时发生异常: {e}")
+                
             log.info(f"📤 正在通过 WebSocket 推送指令到插件: {connection_id}")
             await manager.send_to_client(connection_id, {
                 "action": "inject_reply",
                 "data": {"session_id": session_id, "text": ai_reply_text, "simulate_typing": True}
             })
+            
             log.success("✅ 整个 Session 流程处理圆满结束！")
 
         except Exception as e:
@@ -240,7 +269,7 @@ async def websocket_endpoint(websocket: WebSocket, org_id: str, employee_id: str
         while True:
             data_str = await websocket.receive_text()
             data = json.loads(data_str)
-            
+            logger.info(f"input data [{data_str}]",  )
             if data.get("action") == "new_visitor_message":
                 payload = data["payload"]
                 
@@ -248,14 +277,16 @@ async def websocket_endpoint(websocket: WebSocket, org_id: str, employee_id: str
                 await websocket.send_json({"action": "ack"})
                 
                 # 将全套 AI 逻辑（查库+查记忆+请求LLM）放入后台任务，实现超高并发
-                background_tasks.add_task(
-                    process_ai_reply, 
-                    connection_id, 
-                    payload["session_id"], 
-                    payload["text"],
-                    payload["visitor_uid"]
+                asyncio.create_task(
+                    process_ai_reply(
+                        connection_id, 
+                        payload["session_id"], 
+                        payload["text"],
+                        payload["visitor_uid"]
+                    )
                 )
     except WebSocketDisconnect:
+        logger.info(f"exception for {connection_id}, {traceback.format_exc() } ")
         manager.disconnect(connection_id)
 
 if __name__ == "__main__":
