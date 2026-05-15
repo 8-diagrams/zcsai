@@ -13,8 +13,14 @@ from loguru import logger
 import traceback
 import time 
 
-from UtilRAG import retrieve_rag_context
+import UtilRAG #import retrieve_rag_context
 import UtilMem
+
+#move to config.py
+from config import settings, YQrequirement
+
+#router 
+from router_kb import router as kb_router
 
 
 # 移除默认配置
@@ -24,24 +30,7 @@ logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{level: <
 # 添加文件日志（持久化，方便查昨天的Bug）
 logger.add("logs/agent_server.log", rotation="10 MB", level="DEBUG")
 
-# ==========================================
-# 1. 全局配置管理 (加载 .env)
-# ==========================================
-class Settings(BaseSettings):
-    DATABASE_URL: str
-    LLM_API_KEY: str
-    LLM_BASE_URL: str
-    LLM_MODEL_NAME: str = "gpt-4o-mini"
-    MEMORY_DB_PATH: str = "./memory_db"
-    DEBUG_MODE: bool = False
-    LLM_EMBEDDING_MODEL: str
 
-    # 指定从 .env 文件读取
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
-
-YQrequirement="""角色: 你是一个有高中学历的真人,请用最简洁的话直接回答问题或者提出问题, 不要发挥. 记忆中有的信息不要重复问客户, 不要回答一些和领域无关的问题 """
-# 实例化配置对象
-settings = Settings()
 
 print("====== 终极调试 ======")
 print("我读到的 API KEY 是: [", settings.LLM_API_KEY, "]")
@@ -219,7 +208,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             final_kb_context, final_kb_instructions = "暂无", "无特殊约束"
             
             if sess.activity_id:
-                final_kb_context, final_kb_instructions = await retrieve_rag_context(
+                final_kb_context, final_kb_instructions = await UtilRAG.retrieve_rag_context(
                     db=db, 
                     activity_id=sess.activity_id, 
                     org_id=sess.org_id, 
@@ -227,7 +216,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                     visitor_msg=visitor_msg, 
                     log=log
                 )
-                log.info(f"RAG GOT final_kb_context {len(final_kb_context) } final_kb_instructions{len(final_kb_instructions) }")
+                log.info(f"RAG GOT final_kb_context {(final_kb_context) } final_kb_instructions { (final_kb_instructions) }")
             metrics["B5_RAG"] = time.perf_counter() - t0
             
             # C. 检索 Mem0 记忆
@@ -319,6 +308,8 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                             f"A. 查会话 (MySQL)      : {metrics['A_DB_Session']:.3f} 秒\n"
                             f"B. 查剧本 (MySQL)      : {metrics['B_DB_Activity']:.3f} 秒\n"
                             f"C. Mem0 搜记忆 (Search): {metrics['C_Mem0_Search']:.3f} 秒  <-- 重点关注\n"
+                            f"C. B5_RAG 搜知识库 (Search): {metrics['B5_RAG']:.3f} 秒  <-- 重点关注\n"
+                            
                             f"D. 大模型推理 (LLM)    : {metrics['D_LLM_Chat']:.3f} 秒\n"
                             f"E. 落库及WS下发        : {metrics['E_DB_Save_WS']:.3f} 秒\n"
                             f"F. Mem0 存记忆 (Add)   : {metrics['F_Mem0_Add']:.3f} 秒  <-- 重点关注\n"
@@ -334,9 +325,14 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
 # 6. FastAPI 路由挂载
 # ==========================================
 app = FastAPI(title="SaaS AI Agent Hub")
+#give a setting to state.
+app.state.main_settings = settings
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+app.include_router(kb_router)
+
+#router 
 @app.websocket("/ws/{org_id}/{employee_id}")
 async def websocket_endpoint(websocket: WebSocket, org_id: str, employee_id: str, background_tasks: BackgroundTasks):
     connection_id = f"{org_id}_{employee_id}"
