@@ -11,6 +11,7 @@ from loguru import logger
 # 导入咱们写的工具和数据库地基
 from UtilVector import chunk_text, get_embeddings
 from database import AsyncSessionLocal
+from datetime import datetime, timezone 
 
 from models import ActivityKBMount, KnowledgeBase, Activity
 from sqlalchemy.future import select
@@ -30,6 +31,7 @@ class CreateKBRequest(BaseModel):
     name: str
     org_id: str
     group_id: str = None
+    is_shared_to_groups : bool = False
     usage_guideline: str = None
     raw_text: str  # 粘贴进来的产品手册纯文本
 
@@ -64,12 +66,18 @@ async def create_knowledge_base(request: Request, req: CreateKBRequest, db: Asyn
         )
         
         points = []
+        current_time = datetime.now(timezone.utc).isoformat()
         for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
             points.append(
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=emb,
-                    payload={"text": chunk, "source_kb": kb_id} # 把原文当做 payload 存进去
+                    payload={
+                        "text": chunk, 
+                        "source_kb": kb_id,
+                        "added_at": current_time, # 🆕 注入时间戳
+                        "type": "create"          # 🆕 标记操作类型
+                    } 
                 )
             )
             
@@ -85,6 +93,7 @@ async def create_knowledge_base(request: Request, req: CreateKBRequest, db: Asyn
             usage_guideline=req.usage_guideline,
             org_id=req.org_id,
             group_id=req.group_id,
+            is_shared_to_groups=req.is_shared_to_groups,
             vector_collection_name=collection_name
         )
         db.add(new_kb)
@@ -101,7 +110,7 @@ async def create_knowledge_base(request: Request, req: CreateKBRequest, db: Asyn
         raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
 
 from sqlalchemy.future import select # 确保顶部引入了 select
-from datetime import datetime
+
 
 # 1. 定义追加知识的前端请求结构
 class AppendKBRequest(BaseModel):
@@ -165,6 +174,82 @@ async def append_knowledge(request: Request, req: AppendKBRequest, db: AsyncSess
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"追加知识失败: {str(e)}")
 
+# ========================================================
+# 3. 替换知识库 (Replace) 🆕 完整新增区块
+# ========================================================
+class ReplaceKBRequest(BaseModel):
+    kb_id: str
+    new_raw_text: str  # 最新的完整文本
+
+@router.post("/api/kb/replace")
+async def replace_knowledge(request: Request, req: ReplaceKBRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        logger.info(f"need to replace_knowledge {req.kb_id}")
+        # 第一步：查 MySQL 获取 collection_name
+        result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == req.kb_id))
+        kb = result.scalar_one_or_none()
+        
+        if not kb:
+            raise HTTPException(status_code=404, detail="找不到指定的知识库")
+
+        # 第二步：对新的文本进行切片与向量化
+        chunks = await chunk_text(req.new_raw_text)
+        if not chunks:
+            raise HTTPException(status_code=400, detail="替换的文本内容为空")
+            
+        main_settings = request.app.state.main_settings
+        llm_client = AsyncOpenAI(
+            api_key=main_settings.LLM_API_KEY,
+            base_url=main_settings.LLM_BASE_URL
+        )    
+        
+        embeddings = await get_embeddings(llm_client, chunks)
+
+        # 🚨 第三步 (核心)：去 Qdrant 里精准删除该 kb_id 下的所有老切片
+        await qdrant_client.delete(
+            collection_name=kb.vector_collection_name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="source_kb", 
+                        match=MatchValue(value=req.kb_id) # 匹配当初入库时埋下的 payload 标签
+                    )
+                ]
+            )
+        )
+        
+        # 第四步：打上最新的时间戳，重新插入数据点
+        points = []
+        current_time = datetime.now(timezone.utc).isoformat()
+        
+        for chunk, emb in zip(chunks, embeddings):
+            points.append(
+                PointStruct(
+                    id=str(uuid.uuid4()), 
+                    vector=emb,
+                    payload={
+                        "text": chunk, 
+                        "source_kb": req.kb_id, 
+                        "added_at": current_time, # 🆕 更新为最新的时间戳
+                        "type": "replace" 
+                    } 
+                )
+            )
+            
+        await qdrant_client.upsert(
+            collection_name=kb.vector_collection_name,
+            points=points
+        )
+        
+        return {
+            "status": "success", 
+            "message": f"成功清空老数据，并为 [{kb.name}] 替换了 {len(chunks)} 条最新知识切片",
+            "new_chunk_count": len(chunks)
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"替换知识失败: {str(e)}")
+        
 # 1. 定义前端传过来的挂载请求参数
 class MountKBRequest(BaseModel):
     activity_id: str        # 目标活动的 ID

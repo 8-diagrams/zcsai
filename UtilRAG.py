@@ -70,13 +70,34 @@ async def retrieve_rag_context(db, activity_id: str, org_id: str, group_id: str,
                     search_result = await qdrant_client.query_points(
                         collection_name=kb.vector_collection_name, 
                         query=query_vector,
-                        limit=3 # 🎯 每次查询取出相关度最高的 3 个切片片段
+                        limit=10  # 🎯 扩大召回池
                     )
                     
-                    # 3. 返回结果变更为 QueryResponse 对象，数据列表存储在 .points 属性中
                     if search_result and search_result.points:
-                        # 提取 payload 中的原文并拼接
-                        extracted_texts = [hit.payload.get("text", "") for hit in search_result.points]
+                        points = search_result.points
+                        
+                        # 2. 时间重排 (Re-rank)：在 Python 内存中根据 added_at 进行降序排序
+                        # 对于历史遗留的没有 added_at 的旧数据，默认给一个极老的时间垫底
+                        points_sorted = sorted(
+                            points, 
+                            key=lambda hit: hit.payload.get("added_at", "1970-01-01T00:00:00"), 
+                            reverse=True # True 表示时间最新的排在最前面
+                        )
+                        
+                        # 3. 精准截断 (Truncate)：只取重排后最新、最相关的 Top 3
+                        top_3_points = points_sorted[:3]
+                        
+                        # 4. 提取原文并拼接
+                        extracted_texts = []
+                        for hit in top_3_points:
+                            text = hit.payload.get("text", "")
+                            # 可选：如果你想让大模型明确知道这是什么时候的规矩，可以把时间也拼进去
+                            added_time = hit.payload.get("added_at", "")[:10] 
+                            if added_time and added_time != "1970-01-01":
+                                extracted_texts.append(f"[更新于 {added_time}]: {text}")
+                            else:
+                                extracted_texts.append(text)
+                                
                         combined_text = "\n".join(extracted_texts)
                         
                         snippet = f"[{kb.name} 相关资料]:\n{combined_text}"
