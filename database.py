@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     LLM_EMBEDDING_MODEL: str
 
     # 指定从 .env 文件读取
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
     
 # ========================================================
 # 1. 数据库连接配置 (Database URL)

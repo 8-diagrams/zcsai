@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\('router_admin.py'\\).read\\(\\)\\); ast.parse\\(open\\('models.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('router_admin.py'\\).read\\(\\)\\); ast.parse\\(open\\('models.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(.venv/bin/python -c \"import main; print\\('OK'\\)\")",
+      "Bash(uv sync *)",
+      "Bash(curl -s -i -X OPTIONS http://localhost:8000/api/auth/login -H \"Origin: http://localhost:3001\" -H \"Access-Control-Request-Method: POST\" -H \"Access-Control-Request-Headers: content-type\")",
+      "Bash(curl -s -i http://localhost:8000/openapi.json -H \"Origin: http://localhost:3001\")",
+      "Bash(curl -s http://localhost:8000/openapi.json)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('\\\\n'.join\\(sorted\\(d['paths'].keys\\(\\)\\)\\)\\)\")",
+      "Bash(.venv/bin/python *)",
+      "Bash(grep *)"
+    ]
+  }
+}

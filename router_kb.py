@@ -13,8 +13,11 @@ from UtilVector import chunk_text, get_embeddings
 from database import AsyncSessionLocal
 from datetime import datetime, timezone 
 
-from models import ActivityKBMount, KnowledgeBase, Activity
+from models import ActivityKBMount, KnowledgeBase, Activity, User
 from sqlalchemy.future import select
+
+# 共享依赖: DB 会话 + 当前登录用户 + 同 org 校验
+from deps import get_db, get_current_user, require_min_role, assert_same_org
 
 router = APIRouter()
 
@@ -35,12 +38,14 @@ class CreateKBRequest(BaseModel):
     usage_guideline: str = None
     raw_text: str  # 粘贴进来的产品手册纯文本
 
-async def get_db():
-    async with AsyncSessionLocal() as db:
-        yield db
-
 @router.post("/api/kb/create")
-async def create_knowledge_base(request: Request, req: CreateKBRequest, db: AsyncSession = Depends(get_db)):
+async def create_knowledge_base(
+    request: Request,
+    req: CreateKBRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, req.org_id)
     kb_id = f"kb_{uuid.uuid4().hex[:12]}"
     collection_name = f"col_{req.org_id}_{kb_id}"
     logger.info(f"need to create KB_ID {collection_name}")
@@ -119,15 +124,21 @@ class AppendKBRequest(BaseModel):
 
 # 2. 追加知识的路由接口
 @router.post("/api/kb/append")
-async def append_knowledge(request: Request, req: AppendKBRequest, db: AsyncSession = Depends(get_db)):
+async def append_knowledge(
+    request: Request,
+    req: AppendKBRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
     try:
         logger.info(f"need to append_knowledge {req}")
         # 第一步：去 MySQL 里查一下，这个 kb_id 存不存在？它的 collection_name 是什么？
         result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == req.kb_id))
         kb = result.scalar_one_or_none()
-        
+
         if not kb:
             raise HTTPException(status_code=404, detail="找不到指定的知识库")
+        assert_same_org(user, kb.org_id)
 
         # 第二步：对追加进来的新文本进行切片
         chunks = await chunk_text(req.raw_text)
@@ -182,15 +193,21 @@ class ReplaceKBRequest(BaseModel):
     new_raw_text: str  # 最新的完整文本
 
 @router.post("/api/kb/replace")
-async def replace_knowledge(request: Request, req: ReplaceKBRequest, db: AsyncSession = Depends(get_db)):
+async def replace_knowledge(
+    request: Request,
+    req: ReplaceKBRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
     try:
         logger.info(f"need to replace_knowledge {req.kb_id}")
         # 第一步：查 MySQL 获取 collection_name
         result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == req.kb_id))
         kb = result.scalar_one_or_none()
-        
+
         if not kb:
             raise HTTPException(status_code=404, detail="找不到指定的知识库")
+        assert_same_org(user, kb.org_id)
 
         # 第二步：对新的文本进行切片与向量化
         chunks = await chunk_text(req.new_raw_text)
@@ -259,16 +276,24 @@ class MountKBRequest(BaseModel):
 
 # 2. 挂载接口逻辑
 @router.post("/api/kb/mount")
-async def mount_knowledge_base(req: MountKBRequest, db: AsyncSession = Depends(get_db)):
+async def mount_knowledge_base(
+    req: MountKBRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
     try:
         # 第一步：严谨起见，先校验活动和知识库存不存在 (可选，但推荐)
         kb_res = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == req.kb_id))
-        if not kb_res.scalar_one_or_none():
+        kb_obj = kb_res.scalar_one_or_none()
+        if not kb_obj:
             raise HTTPException(status_code=404, detail="找不到该知识库")
-            
+        assert_same_org(user, kb_obj.org_id)
+
         act_res = await db.execute(select(Activity).where(Activity.id == req.activity_id))
-        if not act_res.scalar_one_or_none():
+        act_obj = act_res.scalar_one_or_none()
+        if not act_obj:
             raise HTTPException(status_code=404, detail="找不到该活动")
+        assert_same_org(user, act_obj.org_id)
 
         # 第二步：查询是否已经挂载过了？
         mount_stmt = select(ActivityKBMount).where(

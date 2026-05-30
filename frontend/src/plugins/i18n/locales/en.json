@@ -1,0 +1,84 @@
+{
+  "general": {
+    "hello": "Hello World",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "refresh": "Refresh",
+    "search": "Search",
+    "Login": "Login",
+    "Logout": "Logout",
+    "Sign-up": "Sign Up"
+  },
+  "menu": {
+    "dashboards": "Dashboards",
+    "analytics": "Analytics",
+    "apps_pages": "Apps & Pages",
+    "platform_admin": "Platform",
+    "org_admin": "Company",
+    "group_admin": "Team",
+    "my_work": "My Workspace",
+    "account": "Account"
+  },
+  "page_register": {
+    "h4": "One Platform for Global Team",
+    "desc1": "Place to Manage Pay, Expenses, and Benefits",
+    "has-account": "Already have an account?",
+    "Sign-in-instead": "Sign in instead",
+    "I_agree_to": "I agree to",
+    "privacy-policy-terms": "privacy policy & terms"
+  },
+  "page_login": {
+    "h4": "AI Customer Service SaaS Console",
+    "desc1": "Please sign-in to your account with your email",
+    "New-on-our-platform": "New on our platform?",
+    "Forgot-Password": "Forgot Password?",
+    "Create-an-account": "Create an account",
+    "Remember-me": "Remember me"
+  },
+  "page_admin": {
+    "referrers": "Referrers",
+    "organizations": "Organizations",
+    "users": "Users"
+  },
+  "page_org": {
+    "groups": "Groups",
+    "employees": "Employees",
+    "activities": "Activities",
+    "kbs": "Knowledge Bases",
+    "sessions": "Sessions"
+  },
+  "page_group": {
+    "index": "Team Dashboard",
+    "employees": "Team Employees",
+    "activities": "Team Activities",
+    "sessions": "Live Sessions"
+  },
+  "page_me": {
+    "sessions": "My Sessions",
+    "session": "Session Workspace"
+  },
+  "roles": {
+    "platform_admin": "Platform Admin",
+    "org_admin": "Org Admin",
+    "group_admin": "Group Admin",
+    "agent": "Agent"
+  },
+  "session": {
+    "status": {
+      "active": "Active",
+      "closed": "Closed",
+      "transferred": "Transferred"
+    },
+    "sender": {
+      "visitor": "Visitor",
+      "employee": "Agent",
+      "system": "System"
+    },
+    "transfer": "Transfer",
+    "close": "Close",
+    "send": "Send"
+  }
+}

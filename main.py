@@ -8,10 +8,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import String, Text, Integer, Boolean, select
 from mem0 import Memory
 from openai import AsyncOpenAI
-import sys 
+import sys
 from loguru import logger
 import traceback
-import time 
+import time
+import random
+from typing import Optional
 
 import UtilRAG #import retrieve_rag_context
 import UtilMem
@@ -19,8 +21,10 @@ import UtilMem
 #move to config.py
 from config import settings, YQrequirement
 
-#router 
+#router
 from router_kb import router as kb_router
+from router_auth import router as auth_router
+from router_admin import router as admin_router
 
 
 # 移除默认配置
@@ -76,7 +80,7 @@ from database import engine, Base, AsyncSessionLocal
 # 🚨 第 2 步：显式引入 models.py 里的所有表！
 # (极其关键：如果不在这里 import，SQLAlchemy 就不知道这些表的存在，启动时就不会自动建表，查询也会报错)
 # ---------------------------------------------------------
-from models import SessionRecord, Activity, Message, KnowledgeBase, ActivityKBMount
+from models import SessionRecord, Activity, Message, KnowledgeBase, ActivityKBMount, Employee
 
 # ==========================================
 # 3. 初始化 AI 客户端与 Mem0 记忆引擎
@@ -155,10 +159,33 @@ manager = ConnectionManager()
 # ==========================================
 # 2. 深度监控版的推理函数
 # ==========================================
-async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str, visitor_uid: str):
+# ==========================================
+# 根据 activity 匹配一个接待坐席
+# 默认策略：同 org_id + group_id 下，is_ai=1 且 status='online' 的随机一个
+# 后续可在此函数内细化(轮询/负载均衡/技能匹配等)
+# ==========================================
+async def match_employee_for_activity(db, activity: Activity, log) -> Optional[Employee]:
+    res = await db.execute(
+        select(Employee).where(
+            Employee.org_id == activity.org_id,
+            Employee.group_id == activity.group_id,
+            Employee.is_ai.is_(True),
+            Employee.status == "online",
+        )
+    )
+    candidates = res.scalars().all()
+    if not candidates:
+        log.warning(f"⚠️ 活动 {activity.id} (org={activity.org_id}, group={activity.group_id}) 下没有 online 的 AI 坐席")
+        return None
+    chosen = random.choice(candidates)
+    log.info(f"🎯 为活动 {activity.id} 匹配到坐席 {chosen.id} ({chosen.name}) / 候选数={len(candidates)}")
+    return chosen
+
+
+async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str, visitor_uid: str, activity_id: str):
     # 为当前 Session 创建一个独立的日志标识（Logger Context）
-    log = logger.bind(session_id=session_id, visitor=visitor_uid)
-    log.info(f"🚀 [新任务] 开始处理会话消息: '{visitor_msg}'")
+    log = logger.bind(session_id=session_id, visitor=visitor_uid, activity=activity_id, conn=connection_id)
+    log.info(f"🚀 [新任务] 开始处理 | activity={activity_id} visitor={visitor_uid} session={session_id} text='{visitor_msg}'")
     metrics = {
             "A_DB_Session": 0,
             "B_DB_Activity": 0,
@@ -182,8 +209,41 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             sess = result.scalar_one_or_none()
             metrics["A_DB_Session"] = time.perf_counter() - t0
             if not sess:
-                log.error(f"❌ 找不到会话对象: {session_id}")
-                return
+                # 首次进线：用 URL 上的 activity_id 反查 activity，从中拿 org/group，再分配 employee
+                log.info(f"🆕 Session {session_id} 在 DB 中不存在，开始首次建会话流程")
+                act_res = await db.execute(select(Activity).where(Activity.id == activity_id))
+                act = act_res.scalar_one_or_none()
+                if not act:
+                    log.error(f"❌ 前端传入的 activity_id={activity_id} 在 activities 表中不存在，放弃建会话")
+                    return
+                log.info(f"📋 命中活动剧本: id={act.id} name={act.name} org={act.org_id} group={act.group_id}")
+
+                matched = await match_employee_for_activity(db, act, log)
+                bind_employee_id = matched.id if matched is not None else None
+                if bind_employee_id is None:
+                    log.warning("⚠️ 未匹配到坐席，session.employee_id 将留空(NULL)")
+
+                sess = SessionRecord(
+                    id=session_id,
+                    org_id=act.org_id,
+                    group_id=act.group_id,
+                    activity_id=activity_id,
+                    employee_id=bind_employee_id,
+                    visitor_uid=visitor_uid,
+                    platform_type="web_demo",
+                    status="active",
+                )
+                db.add(sess)
+                await db.flush()
+                log.success(
+                    f"✅ 新会话已落库 | session_id={session_id} org={sess.org_id} group={sess.group_id} "
+                    f"activity={sess.activity_id} employee={sess.employee_id} visitor={visitor_uid}"
+                )
+            else:
+                log.info(
+                    f"🔁 命中已有 Session | org={sess.org_id} group={sess.group_id} "
+                    f"activity={sess.activity_id} employee={sess.employee_id} stage={sess.current_stage}"
+                )
 
             # B. 查找 Activity
             t0 = time.perf_counter()
@@ -328,38 +388,65 @@ app = FastAPI(title="SaaS AI Agent Hub")
 #give a setting to state.
 app.state.main_settings = settings
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+_cors_origins = [o.strip() for o in settings.FRONTEND_ORIGINS.split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(kb_router)
 
-#router 
-@app.websocket("/ws/{org_id}/{employee_id}")
-async def websocket_endpoint(websocket: WebSocket, org_id: str, employee_id: str, background_tasks: BackgroundTasks):
-    connection_id = f"{org_id}_{employee_id}"
+#router
+# URL: /ws/{activity_id}/{visitor_uid}
+#   - activity_id 决定剧本和 org/group/employee 归属（后端反查）
+#   - visitor_uid 是访客的稳定唯一标识（前端 cookie/localStorage 持久化）
+# connection_id = {activity_id}_{visitor_uid}，天然按访客隔离，避免多访客冲突
+@app.websocket("/ws/{activity_id}/{visitor_uid}")
+async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid: str, background_tasks: BackgroundTasks):
+    connection_id = f"{activity_id}_{visitor_uid}"
+    logger.info(f"🔌 [WS Connect] activity={activity_id} visitor={visitor_uid} conn={connection_id}")
     await manager.connect(websocket, connection_id)
-    
+
     try:
         while True:
             data_str = await websocket.receive_text()
             data = json.loads(data_str)
-            logger.info(f"input data [{data_str}]",  )
+            logger.info(f"📥 [WS Recv] conn={connection_id} raw={data_str}")
             if data.get("action") == "new_visitor_message":
                 payload = data["payload"]
-                
+
                 # 立刻回复 ACK，保持前端长连接健康
                 await websocket.send_json({"action": "ack"})
-                
+
+                # visitor_uid 优先以 URL 为准（连接级身份），payload 里允许同时带上但以 URL 覆盖
+                payload_visitor_uid = payload.get("visitor_uid")
+                if payload_visitor_uid and payload_visitor_uid != visitor_uid:
+                    logger.warning(
+                        f"⚠️ payload.visitor_uid={payload_visitor_uid} 与 URL visitor_uid={visitor_uid} 不一致，以 URL 为准"
+                    )
+
                 # 将全套 AI 逻辑（查库+查记忆+请求LLM）放入后台任务，实现超高并发
                 asyncio.create_task(
                     process_ai_reply(
-                        connection_id, 
-                        payload["session_id"], 
+                        connection_id,
+                        payload["session_id"],
                         payload["text"],
-                        payload["visitor_uid"]
+                        visitor_uid,
+                        activity_id,
                     )
                 )
+            else:
+                logger.info(f"ℹ️ [WS Recv] conn={connection_id} 非业务消息 action={data.get('action')}，已忽略")
     except WebSocketDisconnect:
-        logger.info(f"exception for {connection_id}, {traceback.format_exc() } ")
+        logger.info(f"🔌 [WS Disconnect] conn={connection_id} (正常断开)")
+        manager.disconnect(connection_id)
+    except Exception as e:
+        logger.exception(f"💥 [WS Error] conn={connection_id} err={e}")
         manager.disconnect(connection_id)
 
 if __name__ == "__main__":

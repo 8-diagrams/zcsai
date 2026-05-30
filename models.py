@@ -1,25 +1,101 @@
-from sqlalchemy import Column, String, Boolean, Integer, Text, DateTime, JSON
+from sqlalchemy import Column, String, Boolean, Integer, Text, DateTime, JSON, Enum, Numeric
 from sqlalchemy import ForeignKey
 from database import Base
 
 from datetime import datetime
+
+# ========================================================
+# 0. 多租户主体 (Referrer / Organization / Group / Employee)
+# 与 database.sql 中表结构 1:1 对齐
+# ========================================================
+class Referrer(Base):
+    __tablename__ = "referrers"
+
+    id = Column(String(50), primary_key=True)
+    name = Column(String(100), nullable=False, comment="代理商名称")
+    commission_rate = Column(Numeric(5, 2), default=0.00, comment="分佣比例")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(String(50), primary_key=True)
+    referrer_id = Column(String(50), ForeignKey("referrers.id", ondelete="SET NULL"), nullable=True)
+    name = Column(String(100), nullable=False, comment="商户公司名称")
+    api_key = Column(String(100), unique=True, nullable=False, comment="对外接口通信Key")
+    plan_type = Column(Enum("free", "pro", "enterprise"), default="free")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Group(Base):
+    __tablename__ = "groups"
+
+    id = Column(String(50), primary_key=True)
+    org_id = Column(String(50), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(100), nullable=False, comment="组别名称")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Employee(Base):
+    __tablename__ = "employees"
+
+    id = Column(String(50), primary_key=True)
+    org_id = Column(String(50), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    group_id = Column(String(50), ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)
+    name = Column(String(100), nullable=False, comment="客服/AI 花名")
+    is_ai = Column(Boolean, default=False)
+    status = Column(Enum("online", "offline", "busy"), default="offline")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ========================================================
+# 0.1 登录账号表 (User)
+# ========================================================
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String(50), primary_key=True)
+    email = Column(String(120), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    display_name = Column(String(100), nullable=True)
+    role = Column(
+        Enum("platform_admin", "org_admin", "group_admin", "agent"),
+        nullable=False,
+    )
+    org_id = Column(String(50), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    group_id = Column(String(50), ForeignKey("groups.id", ondelete="SET NULL"), nullable=True, index=True)
+    employee_id = Column(String(50), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True)
+    is_active = Column(Boolean, default=True)
+    last_login_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ========================================================
 # 1. 会话记录表 (SessionRecord)
 # 记录当前访客正在处于哪个活动的哪个阶段
 # ========================================================
 class SessionRecord(Base):
     __tablename__ = "sessions"
-    
+
     id = Column(String(50), primary_key=True, comment="会话ID")
-    
-    # 租户与活动路由
+
     org_id = Column(String(50), index=True, comment="所属公司ID")
     group_id = Column(String(50), index=True, nullable=True, comment="所属团队ID")
     activity_id = Column(String(50), index=True, nullable=True, comment="当前参与的活动ID")
-    
-    # 漏斗状态追踪
+    employee_id = Column(String(50), index=True, nullable=True, comment="当前接待的坐席ID")
+
+    platform_type = Column(String(20), nullable=True, comment="来源渠道: whatsapp/telegram/wechat/web_demo")
+    visitor_uid = Column(String(100), nullable=True, comment="访客外部唯一ID")
+    status = Column(
+        Enum("active", "closed", "transferred"),
+        default="active",
+        comment="会话生命周期",
+    )
+
     current_stage = Column(String(50), default="默认阶段", comment="当前SOP所处的阶段")
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 # ========================================================
 # 2. 聊天明细表 (Message)
@@ -36,7 +112,8 @@ class Message(Base):
     group_id = Column(String(50), index=True, nullable=True)
     activity_id = Column(String(50), index=True, nullable=True)
     
-    sender_type = Column(String(20), comment="发送方类型: visitor / employee(AI)")
+    sender_type = Column(String(20), comment="发送方类型: visitor / employee / system")
+    sender_id = Column(String(100), nullable=True, comment="发送者实体ID")
     content = Column(Text, comment="聊天内容")
     created_at = Column(DateTime, default=datetime.utcnow)
 

@@ -140,6 +140,78 @@ VALUES (
 );
 
 -- 2. 初始化一个会话 (Session)，并强制将其绑定到刚才的活动上，阶段设定为 "探求"
-INSERT INTO sessions (id, org_id, group_id, employee_id, platform_type, visitor_uid, activity_id, current_stage) 
+INSERT INTO sessions (id, org_id, group_id, employee_id, platform_type, visitor_uid, activity_id, current_stage)
 VALUES ('sess_001', 'org_123', 'grp_123_sales', 'emp_ai_001', 'web_demo', 'uid_999', 'act_001', '探求');
+
+
+-- =========================================================
+-- 用户/账号表 (Users) - 登录主体；支持四种角色
+-- platform_admin: 平台超管 (无 org_id)
+-- org_admin:      公司管理员 (有 org_id)
+-- group_admin:    组管理员 (有 org_id + group_id)
+-- agent:          组员/坐席 (有 org_id + group_id + employee_id)
+-- =========================================================
+CREATE TABLE users (
+    id VARCHAR(50) PRIMARY KEY,
+    email VARCHAR(120) UNIQUE NOT NULL COMMENT '登录邮箱',
+    password_hash VARCHAR(255) NOT NULL COMMENT 'bcrypt 哈希',
+    display_name VARCHAR(100) COMMENT '昵称/真实姓名',
+    role ENUM('platform_admin','org_admin','group_admin','agent') NOT NULL COMMENT '角色',
+    org_id VARCHAR(50) NULL COMMENT '所属公司',
+    group_id VARCHAR(50) NULL COMMENT '所属组',
+    employee_id VARCHAR(50) NULL COMMENT '关联坐席ID',
+    is_active BOOLEAN DEFAULT TRUE COMMENT '是否启用',
+    last_login_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE SET NULL,
+    FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 初始化平台超管账号 (登录: admin@local / 密码: admin123)
+-- bcrypt hash 由后端启动脚本 bootstrap_root.py 自动写入
+INSERT INTO users (id, email, password_hash, display_name, role)
+VALUES (
+    'usr_root',
+    'admin@local',
+    '$2b$12$0NIkbbB5B8SDPmsE4tQq7.rzkYG2LfoWgb4sU5qVOaWHcAIiyEOJe',
+    '平台超管',
+    'platform_admin'
+);
+
+-- 给测试公司 org_123 配一个公司管理员 (boss@org123.com / admin123)
+INSERT INTO users (id, email, password_hash, display_name, role, org_id)
+VALUES (
+    'usr_org_admin_123',
+    'boss@org123.com',
+    '$2b$12$0NIkbbB5B8SDPmsE4tQq7.rzkYG2LfoWgb4sU5qVOaWHcAIiyEOJe',
+    'A 公司老板',
+    'org_admin',
+    'org_123'
+);
+
+-- 给 grp_123_sales 配一个组管理员 (lead@org123.com / admin123)
+INSERT INTO users (id, email, password_hash, display_name, role, org_id, group_id)
+VALUES (
+    'usr_group_admin_sales',
+    'lead@org123.com',
+    '$2b$12$0NIkbbB5B8SDPmsE4tQq7.rzkYG2LfoWgb4sU5qVOaWHcAIiyEOJe',
+    '售前组长',
+    'group_admin',
+    'org_123',
+    'grp_123_sales'
+);
+
+-- 把人工坐席 emp_human_001 关联到一个 agent 账号 (laoli@org123.com / admin123)
+INSERT INTO users (id, email, password_hash, display_name, role, org_id, group_id, employee_id)
+VALUES (
+    'usr_agent_laoli',
+    'laoli@org123.com',
+    '$2b$12$0NIkbbB5B8SDPmsE4tQq7.rzkYG2LfoWgb4sU5qVOaWHcAIiyEOJe',
+    '人工客服-老李',
+    'agent',
+    'org_123',
+    'grp_123_support',
+    'emp_human_001'
+);
 

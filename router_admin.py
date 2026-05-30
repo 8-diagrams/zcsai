@@ -1,0 +1,1026 @@
+# router_admin.py — SaaS 管理后台的全部 CRUD 接口 + RBAC
+import json
+import uuid
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import desc, func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
+from deps import (
+    assert_same_group,
+    assert_same_org,
+    get_current_user,
+    get_db,
+    hash_password,
+    require_min_role,
+    require_roles,
+)
+from models import (
+    Activity,
+    ActivityKBMount,
+    Employee,
+    Group,
+    KnowledgeBase,
+    Message,
+    Organization,
+    Referrer,
+    SessionRecord,
+    User,
+)
+from router_auth import UserOut
+
+router = APIRouter(prefix="/api", tags=["admin"])
+
+
+# =============================================================
+# 辅助函数
+# =============================================================
+def _gen_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def _scope_org(stmt, user: User, model):
+    """非平台超管 → 只能看自己 org 的资源。"""
+    if user.role != "platform_admin":
+        stmt = stmt.where(model.org_id == user.org_id)
+    return stmt
+
+
+# =============================================================
+# 1. 代理商 (referrers) — platform_admin Only
+# =============================================================
+class ReferrerIn(BaseModel):
+    name: str
+    commission_rate: float = 0.0
+
+
+class ReferrerOut(BaseModel):
+    id: str
+    name: str
+    commission_rate: float
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/referrers", response_model=List[ReferrerOut])
+async def list_referrers(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("platform_admin")),
+):
+    res = await db.execute(select(Referrer).order_by(desc(Referrer.created_at)))
+    return res.scalars().all()
+
+
+@router.post("/referrers", response_model=ReferrerOut)
+async def create_referrer(
+    body: ReferrerIn,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("platform_admin")),
+):
+    obj = Referrer(id=_gen_id("ref"), name=body.name, commission_rate=body.commission_rate)
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/referrers/{rid}", response_model=ReferrerOut)
+async def update_referrer(
+    rid: str,
+    body: ReferrerIn,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("platform_admin")),
+):
+    res = await db.execute(select(Referrer).where(Referrer.id == rid))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "代理商不存在")
+    obj.name = body.name
+    obj.commission_rate = body.commission_rate
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/referrers/{rid}")
+async def delete_referrer(
+    rid: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("platform_admin")),
+):
+    res = await db.execute(select(Referrer).where(Referrer.id == rid))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "代理商不存在")
+    await db.delete(obj)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 2. 公司/租户 (organizations) — platform_admin
+# =============================================================
+class OrganizationIn(BaseModel):
+    name: str
+    api_key: Optional[str] = None
+    plan_type: str = "free"
+    referrer_id: Optional[str] = None
+
+
+class OrganizationOut(BaseModel):
+    id: str
+    name: str
+    api_key: str
+    plan_type: str
+    referrer_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/organizations", response_model=List[OrganizationOut])
+async def list_orgs(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    stmt = select(Organization).order_by(desc(Organization.created_at))
+    if user.role != "platform_admin":
+        # 公司管理员/组管理员/坐席只能看自己 org
+        if not user.org_id:
+            return []
+        stmt = stmt.where(Organization.id == user.org_id)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+@router.post("/organizations", response_model=OrganizationOut)
+async def create_org(
+    body: OrganizationIn,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("platform_admin")),
+):
+    obj = Organization(
+        id=_gen_id("org"),
+        name=body.name,
+        api_key=body.api_key or f"sk_{uuid.uuid4().hex}",
+        plan_type=body.plan_type,
+        referrer_id=body.referrer_id,
+    )
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/organizations/{oid}", response_model=OrganizationOut)
+async def update_org(
+    oid: str,
+    body: OrganizationIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if user.role != "platform_admin" and user.org_id != oid:
+        raise HTTPException(403, "禁止修改其他公司")
+    res = await db.execute(select(Organization).where(Organization.id == oid))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "公司不存在")
+    obj.name = body.name
+    if user.role == "platform_admin":
+        if body.api_key:
+            obj.api_key = body.api_key
+        obj.plan_type = body.plan_type
+        obj.referrer_id = body.referrer_id
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/organizations/{oid}")
+async def delete_org(
+    oid: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_roles("platform_admin")),
+):
+    res = await db.execute(select(Organization).where(Organization.id == oid))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "公司不存在")
+    await db.delete(obj)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 3. 项目组 (groups) — org_admin+
+# =============================================================
+class GroupIn(BaseModel):
+    name: str
+
+
+class GroupOut(BaseModel):
+    id: str
+    org_id: str
+    name: str
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/orgs/{org_id}/groups", response_model=List[GroupOut])
+async def list_groups(
+    org_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_same_org(user, org_id)
+    stmt = select(Group).where(Group.org_id == org_id).order_by(desc(Group.created_at))
+    if user.role in ("group_admin", "agent") and user.group_id:
+        stmt = stmt.where(Group.id == user.group_id)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+@router.post("/orgs/{org_id}/groups", response_model=GroupOut)
+async def create_group(
+    org_id: str,
+    body: GroupIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    assert_same_org(user, org_id)
+    obj = Group(id=_gen_id("grp"), org_id=org_id, name=body.name)
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/orgs/{org_id}/groups/{gid}", response_model=GroupOut)
+async def update_group(
+    org_id: str,
+    gid: str,
+    body: GroupIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(select(Group).where(Group.id == gid, Group.org_id == org_id))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "组不存在")
+    obj.name = body.name
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/orgs/{org_id}/groups/{gid}")
+async def delete_group(
+    org_id: str,
+    gid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(select(Group).where(Group.id == gid, Group.org_id == org_id))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "组不存在")
+    await db.delete(obj)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 4. 坐席 (employees) — org_admin / group_admin (限本组)
+# =============================================================
+class EmployeeIn(BaseModel):
+    name: str
+    group_id: Optional[str] = None
+    is_ai: bool = False
+    status: str = "offline"
+
+
+class EmployeeOut(BaseModel):
+    id: str
+    org_id: str
+    group_id: Optional[str] = None
+    name: str
+    is_ai: bool
+    status: str
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/orgs/{org_id}/employees", response_model=List[EmployeeOut])
+async def list_employees(
+    org_id: str,
+    group_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_same_org(user, org_id)
+    stmt = select(Employee).where(Employee.org_id == org_id).order_by(desc(Employee.created_at))
+    if user.role in ("group_admin", "agent") and user.group_id:
+        stmt = stmt.where(Employee.group_id == user.group_id)
+    elif group_id:
+        stmt = stmt.where(Employee.group_id == group_id)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+@router.post("/orgs/{org_id}/employees", response_model=EmployeeOut)
+async def create_employee(
+    org_id: str,
+    body: EmployeeIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    if user.role == "group_admin":
+        body.group_id = user.group_id
+    obj = Employee(
+        id=_gen_id("emp"),
+        org_id=org_id,
+        group_id=body.group_id,
+        name=body.name,
+        is_ai=body.is_ai,
+        status=body.status,
+    )
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/orgs/{org_id}/employees/{eid}", response_model=EmployeeOut)
+async def update_employee(
+    org_id: str,
+    eid: str,
+    body: EmployeeIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(
+        select(Employee).where(Employee.id == eid, Employee.org_id == org_id)
+    )
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "坐席不存在")
+    assert_same_group(user, obj.group_id)
+    obj.name = body.name
+    obj.is_ai = body.is_ai
+    obj.status = body.status
+    if user.role != "group_admin":
+        obj.group_id = body.group_id
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/orgs/{org_id}/employees/{eid}")
+async def delete_employee(
+    org_id: str,
+    eid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(
+        select(Employee).where(Employee.id == eid, Employee.org_id == org_id)
+    )
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "坐席不存在")
+    assert_same_group(user, obj.group_id)
+    await db.delete(obj)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 5. 活动剧本 (activities) — org_admin / group_admin
+# =============================================================
+class ActivityIn(BaseModel):
+    name: str
+    group_id: str
+    welcome_message: Optional[str] = None
+    closing_message: Optional[str] = None
+    stages_config: Optional[dict] = None  # 阶段名 -> 指引
+    global_guideline: Optional[str] = None
+
+
+class ActivityOut(BaseModel):
+    id: str
+    org_id: str
+    group_id: str
+    name: str
+    welcome_message: Optional[str] = None
+    closing_message: Optional[str] = None
+    stages_config: Optional[dict] = None
+    global_guideline: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+    @classmethod
+    def from_orm_obj(cls, a: Activity) -> "ActivityOut":
+        try:
+            stages = json.loads(a.stages_config) if a.stages_config else None
+        except Exception:
+            stages = None
+        return cls(
+            id=a.id,
+            org_id=a.org_id,
+            group_id=a.group_id,
+            name=a.name,
+            welcome_message=a.welcome_message,
+            closing_message=a.closing_message,
+            stages_config=stages,
+            global_guideline=a.global_guideline,
+            created_at=a.created_at,
+        )
+
+
+@router.get("/orgs/{org_id}/activities", response_model=List[ActivityOut])
+async def list_activities(
+    org_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_same_org(user, org_id)
+    stmt = select(Activity).where(Activity.org_id == org_id).order_by(desc(Activity.created_at))
+    if user.role in ("group_admin", "agent") and user.group_id:
+        stmt = stmt.where(Activity.group_id == user.group_id)
+    res = await db.execute(stmt)
+    return [ActivityOut.from_orm_obj(a) for a in res.scalars().all()]
+
+
+@router.post("/orgs/{org_id}/activities", response_model=ActivityOut)
+async def create_activity(
+    org_id: str,
+    body: ActivityIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    assert_same_group(user, body.group_id)
+    obj = Activity(
+        id=_gen_id("act"),
+        org_id=org_id,
+        group_id=body.group_id,
+        name=body.name,
+        welcome_message=body.welcome_message,
+        closing_message=body.closing_message,
+        stages_config=json.dumps(body.stages_config, ensure_ascii=False) if body.stages_config else None,
+        global_guideline=body.global_guideline,
+    )
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return ActivityOut.from_orm_obj(obj)
+
+
+@router.patch("/orgs/{org_id}/activities/{aid}", response_model=ActivityOut)
+async def update_activity(
+    org_id: str,
+    aid: str,
+    body: ActivityIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(
+        select(Activity).where(Activity.id == aid, Activity.org_id == org_id)
+    )
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "活动不存在")
+    assert_same_group(user, obj.group_id)
+    obj.name = body.name
+    obj.welcome_message = body.welcome_message
+    obj.closing_message = body.closing_message
+    obj.stages_config = json.dumps(body.stages_config, ensure_ascii=False) if body.stages_config else None
+    obj.global_guideline = body.global_guideline
+    if user.role != "group_admin":
+        obj.group_id = body.group_id
+    await db.commit()
+    await db.refresh(obj)
+    return ActivityOut.from_orm_obj(obj)
+
+
+@router.delete("/orgs/{org_id}/activities/{aid}")
+async def delete_activity(
+    org_id: str,
+    aid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(
+        select(Activity).where(Activity.id == aid, Activity.org_id == org_id)
+    )
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "活动不存在")
+    assert_same_group(user, obj.group_id)
+    await db.delete(obj)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 6. 知识库列表 (复用 router_kb 写接口;读 + 删 在这里实现)
+# =============================================================
+class KBOut(BaseModel):
+    id: str
+    name: str
+    usage_guideline: Optional[str] = None
+    org_id: str
+    group_id: Optional[str] = None
+    is_shared_to_groups: bool
+    vector_collection_name: str
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/orgs/{org_id}/kbs", response_model=List[KBOut])
+async def list_kbs(
+    org_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_same_org(user, org_id)
+    stmt = select(KnowledgeBase).where(KnowledgeBase.org_id == org_id)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+@router.delete("/kbs/{kb_id}")
+async def delete_kb(
+    kb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    res = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+    kb = res.scalar_one_or_none()
+    if not kb:
+        raise HTTPException(404, "知识库不存在")
+    assert_same_org(user, kb.org_id)
+    await db.delete(kb)
+    await db.commit()
+    # 同步删 Qdrant collection
+    try:
+        from glbclient import qdrant_client
+        await qdrant_client.delete_collection(collection_name=kb.vector_collection_name)
+    except Exception:
+        pass
+    return {"status": "ok"}
+
+
+# 列出某活动已挂载的知识库
+class KBMountOut(BaseModel):
+    activity_id: str
+    kb_id: str
+    priority: int
+    mount_guideline: Optional[str] = None
+    kb_name: Optional[str] = None
+
+
+@router.get("/activities/{activity_id}/kb-mounts", response_model=List[KBMountOut])
+async def list_activity_kb_mounts(
+    activity_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # 校验 activity 属于自己 org
+    a_res = await db.execute(select(Activity).where(Activity.id == activity_id))
+    a = a_res.scalar_one_or_none()
+    if not a:
+        raise HTTPException(404, "活动不存在")
+    assert_same_org(user, a.org_id)
+
+    mounts_res = await db.execute(
+        select(ActivityKBMount).where(ActivityKBMount.activity_id == activity_id)
+    )
+    mounts = mounts_res.scalars().all()
+    if not mounts:
+        return []
+    kb_ids = [m.kb_id for m in mounts]
+    kb_res = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id.in_(kb_ids)))
+    kbs = {k.id: k.name for k in kb_res.scalars().all()}
+    return [
+        KBMountOut(
+            activity_id=m.activity_id,
+            kb_id=m.kb_id,
+            priority=m.priority,
+            mount_guideline=m.mount_guideline,
+            kb_name=kbs.get(m.kb_id),
+        )
+        for m in mounts
+    ]
+
+
+@router.delete("/activities/{activity_id}/kb-mounts/{kb_id}")
+async def unmount_kb(
+    activity_id: str,
+    kb_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    a_res = await db.execute(select(Activity).where(Activity.id == activity_id))
+    a = a_res.scalar_one_or_none()
+    if not a:
+        raise HTTPException(404, "活动不存在")
+    assert_same_org(user, a.org_id)
+    assert_same_group(user, a.group_id)
+
+    res = await db.execute(
+        select(ActivityKBMount).where(
+            ActivityKBMount.activity_id == activity_id,
+            ActivityKBMount.kb_id == kb_id,
+        )
+    )
+    m = res.scalar_one_or_none()
+    if not m:
+        raise HTTPException(404, "挂载关系不存在")
+    await db.delete(m)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 7. 会话 + 消息 (sessions / messages) — 全部角色按隔离规则
+# =============================================================
+class SessionOut(BaseModel):
+    id: str
+    org_id: str
+    group_id: Optional[str] = None
+    activity_id: Optional[str] = None
+    employee_id: Optional[str] = None
+    platform_type: Optional[str] = None
+    visitor_uid: Optional[str] = None
+    status: Optional[str] = None
+    current_stage: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/orgs/{org_id}/sessions", response_model=List[SessionOut])
+async def list_sessions(
+    org_id: str,
+    group_id: Optional[str] = Query(None),
+    activity_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_same_org(user, org_id)
+    stmt = select(SessionRecord).where(SessionRecord.org_id == org_id)
+    if user.role in ("group_admin", "agent") and user.group_id:
+        stmt = stmt.where(SessionRecord.group_id == user.group_id)
+    elif group_id:
+        stmt = stmt.where(SessionRecord.group_id == group_id)
+    if activity_id:
+        stmt = stmt.where(SessionRecord.activity_id == activity_id)
+    if status:
+        stmt = stmt.where(SessionRecord.status == status)
+    stmt = stmt.order_by(desc(SessionRecord.created_at)).limit(limit)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+# 坐席专用:我的会话
+@router.get("/me/sessions", response_model=List[SessionOut])
+async def my_sessions(
+    status: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if not user.org_id:
+        return []
+    stmt = select(SessionRecord).where(SessionRecord.org_id == user.org_id)
+    if user.role == "agent" and user.employee_id:
+        stmt = stmt.where(SessionRecord.employee_id == user.employee_id)
+    elif user.group_id:
+        stmt = stmt.where(SessionRecord.group_id == user.group_id)
+    if status:
+        stmt = stmt.where(SessionRecord.status == status)
+    stmt = stmt.order_by(desc(SessionRecord.created_at)).limit(limit)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+class MessageOut(BaseModel):
+    id: int
+    session_id: str
+    sender_type: str
+    sender_id: Optional[str] = None
+    content: str
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+async def _load_session_or_403(sid: str, db: AsyncSession, user: User) -> SessionRecord:
+    s_res = await db.execute(select(SessionRecord).where(SessionRecord.id == sid))
+    sess = s_res.scalar_one_or_none()
+    if not sess:
+        raise HTTPException(404, "会话不存在")
+    assert_same_org(user, sess.org_id)
+    if user.role == "agent":
+        if user.employee_id and sess.employee_id and sess.employee_id != user.employee_id:
+            raise HTTPException(403, "无权访问其他坐席的会话")
+    elif user.role == "group_admin" and user.group_id:
+        if sess.group_id and sess.group_id != user.group_id:
+            raise HTTPException(403, "无权查看其他组会话")
+    return sess
+
+
+@router.get("/sessions/{sid}/messages", response_model=List[MessageOut])
+async def session_messages(
+    sid: str,
+    limit: int = Query(200, le=500),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    await _load_session_or_403(sid, db, user)
+    res = await db.execute(
+        select(Message)
+        .where(Message.session_id == sid)
+        .order_by(Message.created_at.asc())
+        .limit(limit)
+    )
+    return res.scalars().all()
+
+
+class MessageIn(BaseModel):
+    content: str
+
+
+@router.post("/sessions/{sid}/messages", response_model=MessageOut)
+async def send_session_message(
+    sid: str,
+    body: MessageIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    sess = await _load_session_or_403(sid, db, user)
+    if sess.status and sess.status != "active":
+        raise HTTPException(400, "会话已不处于活跃状态,无法发送")
+    text = (body.content or "").strip()
+    if not text:
+        raise HTTPException(400, "消息内容不能为空")
+    msg = Message(
+        session_id=sid,
+        org_id=sess.org_id,
+        group_id=sess.group_id,
+        activity_id=sess.activity_id,
+        sender_type="employee",
+        sender_id=user.employee_id or user.id,
+        content=text,
+    )
+    db.add(msg)
+    await db.commit()
+    await db.refresh(msg)
+    return msg
+
+
+class TransferIn(BaseModel):
+    target_employee_id: str
+
+
+@router.post("/sessions/{sid}/transfer")
+async def transfer_session(
+    sid: str,
+    body: TransferIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    sess = await _load_session_or_403(sid, db, user)
+    emp_res = await db.execute(select(Employee).where(Employee.id == body.target_employee_id))
+    emp = emp_res.scalar_one_or_none()
+    if not emp:
+        raise HTTPException(404, "目标坐席不存在")
+    if emp.org_id != sess.org_id:
+        raise HTTPException(403, "目标坐席不属于本公司")
+    sess.employee_id = emp.id
+    sess.status = "transferred"
+    db.add(Message(
+        session_id=sid,
+        org_id=sess.org_id,
+        group_id=sess.group_id,
+        activity_id=sess.activity_id,
+        sender_type="system",
+        sender_id=user.id,
+        content=f"会话已转接至坐席 {emp.name} ({emp.id})",
+    ))
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/sessions/{sid}/close")
+async def close_session(
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    sess = await _load_session_or_403(sid, db, user)
+    if sess.status == "closed":
+        return {"status": "ok"}
+    sess.status = "closed"
+    db.add(Message(
+        session_id=sid,
+        org_id=sess.org_id,
+        group_id=sess.group_id,
+        activity_id=sess.activity_id,
+        sender_type="system",
+        sender_id=user.id,
+        content="会话已关闭",
+    ))
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 8. 用户管理 (users) — platform_admin (全部) / org_admin (本 org)
+# =============================================================
+class UserIn(BaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+    role: str = Field(..., description="platform_admin | org_admin | group_admin | agent")
+    org_id: Optional[str] = None
+    group_id: Optional[str] = None
+    employee_id: Optional[str] = None
+    is_active: bool = True
+
+
+class UserPatchIn(BaseModel):
+    display_name: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+    org_id: Optional[str] = None
+    group_id: Optional[str] = None
+    employee_id: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@router.get("/users", response_model=List[UserOut])
+async def list_users(
+    role: Optional[str] = Query(None),
+    org_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    stmt = select(User).order_by(desc(User.created_at))
+    if user.role != "platform_admin":
+        stmt = stmt.where(User.org_id == user.org_id)
+    elif org_id:
+        stmt = stmt.where(User.org_id == org_id)
+    if role:
+        stmt = stmt.where(User.role == role)
+    res = await db.execute(stmt)
+    return [UserOut.model_validate(u) for u in res.scalars().all()]
+
+
+@router.post("/users", response_model=UserOut)
+async def create_user(
+    body: UserIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    if user.role == "org_admin":
+        if body.role == "platform_admin":
+            raise HTTPException(403, "公司管理员不能创建平台管理员")
+        body.org_id = user.org_id
+
+    # 唯一性校验
+    dup = await db.execute(select(User).where(User.email == body.email))
+    if dup.scalar_one_or_none():
+        raise HTTPException(400, "邮箱已被占用")
+
+    obj = User(
+        id=_gen_id("usr"),
+        email=body.email,
+        password_hash=hash_password(body.password),
+        display_name=body.display_name,
+        role=body.role,
+        org_id=body.org_id,
+        group_id=body.group_id,
+        employee_id=body.employee_id,
+        is_active=body.is_active,
+    )
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return UserOut.model_validate(obj)
+
+
+@router.patch("/users/{uid}", response_model=UserOut)
+async def update_user(
+    uid: str,
+    body: UserPatchIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    res = await db.execute(select(User).where(User.id == uid))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "用户不存在")
+    if user.role != "platform_admin" and obj.org_id != user.org_id:
+        raise HTTPException(403, "禁止修改其他公司用户")
+    if user.role == "org_admin" and body.role == "platform_admin":
+        raise HTTPException(403, "无权升为平台超管")
+
+    if body.display_name is not None:
+        obj.display_name = body.display_name
+    if body.password:
+        obj.password_hash = hash_password(body.password)
+    if body.role:
+        obj.role = body.role
+    if body.org_id is not None and user.role == "platform_admin":
+        obj.org_id = body.org_id
+    if body.group_id is not None:
+        obj.group_id = body.group_id
+    if body.employee_id is not None:
+        obj.employee_id = body.employee_id
+    if body.is_active is not None:
+        obj.is_active = body.is_active
+
+    await db.commit()
+    await db.refresh(obj)
+    return UserOut.model_validate(obj)
+
+
+@router.delete("/users/{uid}")
+async def delete_user(
+    uid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    res = await db.execute(select(User).where(User.id == uid))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "用户不存在")
+    if user.role != "platform_admin" and obj.org_id != user.org_id:
+        raise HTTPException(403, "禁止删除其他公司用户")
+    if obj.id == user.id:
+        raise HTTPException(400, "不能删除自己")
+    await db.delete(obj)
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 9. 汇总统计 (公司看板) — org_admin+ 看自己 org;platform_admin 全部
+# =============================================================
+class StatsOut(BaseModel):
+    organizations: int
+    groups: int
+    employees: int
+    activities: int
+    sessions: int
+    messages: int
+
+
+@router.get("/stats/overview", response_model=StatsOut)
+async def stats_overview(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    async def _count(model, scope_org: bool = True):
+        stmt = select(func.count()).select_from(model)
+        if scope_org and user.role != "platform_admin" and user.org_id:
+            stmt = stmt.where(model.org_id == user.org_id)
+        res = await db.execute(stmt)
+        return res.scalar() or 0
+
+    return StatsOut(
+        organizations=(await _count(Organization, scope_org=False)) if user.role == "platform_admin" else 1,
+        groups=await _count(Group),
+        employees=await _count(Employee),
+        activities=await _count(Activity),
+        sessions=await _count(SessionRecord),
+        messages=await _count(Message),
+    )

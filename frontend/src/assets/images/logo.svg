@@ -1,0 +1,28 @@
+<svg width="1.875em" height="1.5em" viewBox="0 0 250 196" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+  <!-- 顶部横梁 -->
+  <path fill-rule="evenodd" clip-rule="evenodd"
+    d="M12 0H238C243.523 0 248 4.47715 248 10V48C248 53.5228 243.523 58 238 58H160V186C160 191.523 155.523 196 150 196H100C94.4772 196 90 191.523 90 186V58H12C6.47715 58 2 53.5228 2 48V10C2 4.47715 6.47715 0 12 0Z"
+    fill="#2467e4"/>
+
+  <!-- 高光 -->
+  <path fill-rule="evenodd" clip-rule="evenodd"
+    d="M12 0H238C243.523 0 248 4.47715 248 10V32L2 18V10C2 4.47715 6.47715 0 12 0Z"
+    fill="white" fill-opacity="0.18"/>
+
+  <!-- 左侧阴影 -->
+  <path opacity="0.077704" fill-rule="evenodd" clip-rule="evenodd"
+    d="M2 18L90 58V80L2 32V18Z"
+    fill="black"/>
+
+  <!-- 右侧阴影 -->
+  <path opacity="0.077704" fill-rule="evenodd" clip-rule="evenodd"
+    d="M248 18L160 58V80L248 32V18Z"
+    fill="black"/>
+
+  <!-- 中央竖梁高光 -->
+  <path fill-rule="evenodd" clip-rule="evenodd"
+    d="M90 58H160V186C160 191.523 155.523 196 150 196H100C94.4772 196 90 191.523 90 186V58Z"
+    fill="white" fill-opacity="0.12"/>
+
+</svg>
