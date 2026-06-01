@@ -60,9 +60,18 @@ CREATE TABLE sessions (
     platform_type ENUM('whatsapp', 'telegram', 'wechat', 'web_demo') NOT NULL COMMENT '来源渠道',
     visitor_uid VARCHAR(100) NOT NULL COMMENT '访客在外部平台的唯一ID',
     status ENUM('active', 'closed', 'transferred') DEFAULT 'active' COMMENT '会话生命周期',
+    -- === P1 新增: 情绪 + 多维回合数 + 接管审计 ===
+    current_emotion ENUM('calm','joy','excited','hesitation','impatience','anger')
+        NOT NULL DEFAULT 'calm' COMMENT '访客最近识别到的情绪',
+    total_turn_count INT NOT NULL DEFAULT 0 COMMENT '总对话回合数',
+    stage_turn_count INT NOT NULL DEFAULT 0 COMMENT '当前 stage 停留回合数',
+    is_human_takeover TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已被人工接管；True 时不再调 LLM',
+    human_takeover_at TIMESTAMP NULL DEFAULT NULL COMMENT '接管发生时间',
+    human_takeover_by VARCHAR(50) NULL DEFAULT NULL COMMENT '接管的员工ID',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY idx_active_session (org_id, platform_type, visitor_uid, status), -- 防止同一访客出现多个活跃会话
+    INDEX idx_sessions_takeover (is_human_takeover),
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE SET NULL,
     FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE SET NULL
@@ -77,9 +86,15 @@ CREATE TABLE messages (
     sender_type ENUM('visitor', 'employee', 'system') NOT NULL COMMENT '发送者身份',
     sender_id VARCHAR(100) NULL COMMENT '发送者实体ID (访客UID或客服ID)',
     content TEXT NOT NULL COMMENT '消息文本内容',
+    -- === P1 新增: 消息发出时 session 的状态快照 ===
+    stage_at_send VARCHAR(50) NULL COMMENT '消息发出时所处 stage',
+    emotion_at_send ENUM('calm','joy','excited','hesitation','impatience','anger')
+        NULL COMMENT '消息发出时识别到的访客情绪',
+    llm_decision_raw JSON NULL COMMENT '仅 employee 行：LLM 完整决策快照',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-    INDEX idx_org_group (org_id, group_id) -- 核心查询索引：管理后台按公司/组别看聊天记录秒出
+    INDEX idx_org_group (org_id, group_id), -- 核心查询索引：管理后台按公司/组别看聊天记录秒出
+    INDEX idx_messages_stage (stage_at_send)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =========================================================
@@ -111,8 +126,14 @@ CREATE TABLE activities (
     welcome_message TEXT COMMENT '进线欢迎语',
     closing_message TEXT COMMENT '结束语',
     -- 使用 JSON 存储该活动包含的阶段 SOP 规则，方便以后随时增减
-    -- 例如: ["破冰", "探求", "方案", "逼单", "售后"]
-    stages_config JSON NULL COMMENT '阶段定义字典', 
+    -- 阶段 key 统一英文 snake_case，主要给 LLM 看。当前 6 阶段 SOP：
+    --   stage_1_icebreak  (破冰与探需)
+    --   stage_2_solution  (方案与价值传递)
+    --   stage_3_objection (异议处理)
+    --   stage_4_push      (逼单转化)
+    --   stage_5_sleep     (沉睡/沉默)
+    --   stage_6_aftersales(售后)
+    stages_config JSON NULL COMMENT '阶段定义字典',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
@@ -121,7 +142,7 @@ CREATE TABLE activities (
 -- 2. 修改 Sessions 表，增加 activity 绑定和当前阶段状态
 ALTER TABLE sessions 
 ADD COLUMN activity_id VARCHAR(50) NULL COMMENT '当前绑定的活动剧本' AFTER group_id,
-ADD COLUMN current_stage VARCHAR(50) DEFAULT '破冰' COMMENT '该访客当前处于SOP的哪个阶段' AFTER visitor_uid,
+ADD COLUMN current_stage VARCHAR(50) DEFAULT 'stage_1_icebreak' COMMENT '该访客当前处于SOP的哪个阶段' AFTER visitor_uid,
 ADD CONSTRAINT fk_session_activity FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE SET NULL;
 
 -- 3. 修改 Messages 表，增加 activity_id 冗余，方便极速出报表
@@ -132,16 +153,47 @@ ADD INDEX idx_org_activity (org_id, activity_id); -- 性能起飞：按公司和
 
 
 
--- 1. 插入一条双十一活动剧本（请注意 stages_config 字段里的 JSON 规则）
-INSERT INTO activities (id, org_id, group_id, name, stages_config) 
+-- 1. 插入一条双十一活动剧本 (stages_config 与 stages.json 的 6 阶段定义对齐)
+INSERT INTO activities (id, org_id, group_id, name, stages_config)
 VALUES (
-    'act_001', 'org_123', 'grp_123_sales', '双十一自动逼单剧本', 
-    '{"破冰": "你是客服，现在只需热情打招呼，不要推销。", "探求": "问对方预算是多少，目前有什么痛点。", "逼单": "告诉对方现在下单马上发货，错过等一年！"}'
+    'act_001', 'org_123', 'grp_123_sales', '双十一自动逼单剧本',
+    JSON_OBJECT(
+        'stage_1_icebreak',  JSON_OBJECT(
+            'name', '破冰与探需',
+            'ai_guideline', '你必须表现出极高的热情。主动抛出选择题或引导性问题，探寻客户的具体需求（如行业、痛点、预算或期望功能）。在客户明确需求前，绝对不要急于长篇大论地推销产品或给出准确报价。',
+            'next_possible_stages', JSON_ARRAY('stage_2_solution', 'stage_3_objection', 'stage_5_sleep')
+        ),
+        'stage_2_solution',  JSON_OBJECT(
+            'name', '方案与价值传递',
+            'ai_guideline', '你现在需要扮演资深顾问。严格依据知识库中检索到的事实，给出能精准解决客户需求的方案，强调差异化亮点，并在结尾引导下一步动作。',
+            'next_possible_stages', JSON_ARRAY('stage_3_objection', 'stage_4_push', 'stage_5_sleep')
+        ),
+        'stage_3_objection', JSON_OBJECT(
+            'name', '异议处理',
+            'ai_guideline', '先安抚情绪、表示共情；然后精准调用退换货保障/权威认证/售后承诺等政策给出专业且诚恳的解答。',
+            'next_possible_stages', JSON_ARRAY('stage_2_solution', 'stage_4_push', 'stage_5_sleep')
+        ),
+        'stage_4_push',      JSON_OBJECT(
+            'name', '逼单转化',
+            'ai_guideline', '促单黄金时机！抛出限时优惠/库存紧张/当天专属福利等稀缺性话术，制造紧迫感推动客户成单。',
+            'next_possible_stages', JSON_ARRAY('stage_6_aftersales', 'stage_3_objection', 'stage_5_sleep')
+        ),
+        'stage_5_sleep',     JSON_OBJECT(
+            'name', '沉睡/沉默',
+            'ai_guideline', '执行异步唤醒任务，结合客户此前关注点生成一条自然、不唐突的跟进话术。',
+            'next_possible_stages', JSON_ARRAY('stage_1_icebreak', 'stage_2_solution')
+        ),
+        'stage_6_aftersales', JSON_OBJECT(
+            'name', '售后',
+            'ai_guideline', '把自己定位为贴心的客户经理：先确认订单细节与使用说明，再在合适时机铺垫复购或增值服务，避免让客户感觉刚成单又被推销。',
+            'next_possible_stages', JSON_ARRAY('stage_5_sleep', 'stage_1_icebreak')
+        )
+    )
 );
 
--- 2. 初始化一个会话 (Session)，并强制将其绑定到刚才的活动上，阶段设定为 "探求"
+-- 2. 初始化一个会话 (Session)，绑定到上述活动，stage 从默认 stage_1_icebreak 起步
 INSERT INTO sessions (id, org_id, group_id, employee_id, platform_type, visitor_uid, activity_id, current_stage)
-VALUES ('sess_001', 'org_123', 'grp_123_sales', 'emp_ai_001', 'web_demo', 'uid_999', 'act_001', '探求');
+VALUES ('sess_001', 'org_123', 'grp_123_sales', 'emp_ai_001', 'web_demo', 'uid_999', 'act_001', 'stage_1_icebreak');
 
 
 -- =========================================================

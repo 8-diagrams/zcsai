@@ -40,10 +40,22 @@ router.beforeEach(async (to) => {
   return true
 })
 
-// 全局监听 401 事件 → 跳登录
+// 全局监听 401 事件 → 清登录态 + 跳登录(带 redirect 回跳)
 if (typeof window !== 'undefined') {
   window.addEventListener('auth:unauthorized', () => {
-    router.push('/login')
+    try {
+      // pinia 已在前一个 plugin 注册,此处可安全取 store
+      const auth = useAuthStore()
+      auth.logout()
+    } catch (e) {
+      console.warn('[auth:unauthorized] logout 失败:', e)
+    }
+
+    const current = router.currentRoute.value
+    if (current.path === '/login') return // 已经在登录页,不重复跳
+
+    const redirect = current.fullPath && current.fullPath !== '/' ? current.fullPath : undefined
+    router.replace({ path: '/login', query: redirect ? { redirect } : {} })
   })
 }
 

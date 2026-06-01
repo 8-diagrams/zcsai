@@ -1,8 +1,22 @@
-from sqlalchemy import Column, String, Boolean, Integer, Text, DateTime, JSON, Enum, Numeric
+from sqlalchemy import Column, String, Boolean, Integer, Text, DateTime, JSON, Enum as SQLEnum, Numeric
 from sqlalchemy import ForeignKey
 from database import Base
 
 from datetime import datetime
+import enum
+
+# ========================================================
+# 客户情绪枚举 (LLM-facing English snake_case)
+# 严格规约：不允许 LLM 自创新值；UtilLLM 会做校验
+# ========================================================
+class CustomerEmotion(str, enum.Enum):
+    CALM = "calm"               # 平静，正常沟通
+    JOY = "joy"                 # 喜悦/满意/赞同/表达感谢
+    EXCITED = "excited"         # 兴奋/高情绪/对方案显著心动
+    HESITATION = "hesitation"   # 犹豫/在意价格/对比竞品
+    IMPATIENCE = "impatience"   # 急躁/催促/失耐心
+    ANGER = "anger"             # 愤怒/投诉/爆粗口
+
 
 # ========================================================
 # 0. 多租户主体 (Referrer / Organization / Group / Employee)
@@ -24,7 +38,7 @@ class Organization(Base):
     referrer_id = Column(String(50), ForeignKey("referrers.id", ondelete="SET NULL"), nullable=True)
     name = Column(String(100), nullable=False, comment="商户公司名称")
     api_key = Column(String(100), unique=True, nullable=False, comment="对外接口通信Key")
-    plan_type = Column(Enum("free", "pro", "enterprise"), default="free")
+    plan_type = Column(SQLEnum("free", "pro", "enterprise"), default="free")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -45,7 +59,7 @@ class Employee(Base):
     group_id = Column(String(50), ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)
     name = Column(String(100), nullable=False, comment="客服/AI 花名")
     is_ai = Column(Boolean, default=False)
-    status = Column(Enum("online", "offline", "busy"), default="offline")
+    status = Column(SQLEnum("online", "offline", "busy"), default="offline")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -60,7 +74,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     display_name = Column(String(100), nullable=True)
     role = Column(
-        Enum("platform_admin", "org_admin", "group_admin", "agent"),
+        SQLEnum("platform_admin", "org_admin", "group_admin", "agent"),
         nullable=False,
     )
     org_id = Column(String(50), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -88,12 +102,26 @@ class SessionRecord(Base):
     platform_type = Column(String(20), nullable=True, comment="来源渠道: whatsapp/telegram/wechat/web_demo")
     visitor_uid = Column(String(100), nullable=True, comment="访客外部唯一ID")
     status = Column(
-        Enum("active", "closed", "transferred"),
+        SQLEnum("active", "closed", "transferred"),
         default="active",
         comment="会话生命周期",
     )
 
-    current_stage = Column(String(50), default="默认阶段", comment="当前SOP所处的阶段")
+    current_stage = Column(String(50), default="stage_1_icebreak", comment="当前SOP所处的阶段")
+
+    # === P1 新增: 情绪 + 多维回合数 + 接管审计 ===
+    current_emotion = Column(
+        SQLEnum(CustomerEmotion),
+        default=CustomerEmotion.CALM,
+        nullable=False,
+        comment="访客最近一次被识别到的情绪",
+    )
+    total_turn_count = Column(Integer, default=0, nullable=False, comment="总对话回合数 (以访客发一条计一回合)")
+    stage_turn_count = Column(Integer, default=0, nullable=False, comment="在当前 stage 停留的回合数")
+    is_human_takeover = Column(Boolean, default=False, nullable=False, index=True, comment="是否已被人工接管；True 时不再调 LLM")
+    human_takeover_at = Column(DateTime, nullable=True, comment="接管发生的时间")
+    human_takeover_by = Column(String(50), nullable=True, comment="接管的 employee_id")
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -115,6 +143,12 @@ class Message(Base):
     sender_type = Column(String(20), comment="发送方类型: visitor / employee / system")
     sender_id = Column(String(100), nullable=True, comment="发送者实体ID")
     content = Column(Text, comment="聊天内容")
+
+    # === P1 新增: 这条消息发出时 session 的状态快照 ===
+    stage_at_send = Column(String(50), nullable=True, index=True, comment="发出时 session 所处 stage")
+    emotion_at_send = Column(SQLEnum(CustomerEmotion), nullable=True, comment="发出时识别到的访客情绪")
+    llm_decision_raw = Column(JSON, nullable=True, comment="仅 sender_type=employee 时有值: LLM 当轮完整返回")
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
 # ========================================================

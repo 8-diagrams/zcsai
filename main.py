@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic_settings import BaseSettings, SettingsConfigDict
 #from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 #from sqlalchemy.orm import declarative_base, Mapped, mapped_column
-from sqlalchemy import String, Text, Integer, Boolean, select
+from sqlalchemy import String, Text, Integer, Boolean, select, update
 from mem0 import Memory
 from openai import AsyncOpenAI
 import sys
@@ -14,6 +14,7 @@ import traceback
 import time
 import random
 from typing import Optional
+from UtilLLM import generate_ai_reply_with_retry
 
 import UtilRAG #import retrieve_rag_context
 import UtilMem
@@ -80,7 +81,7 @@ from database import engine, Base, AsyncSessionLocal
 # 🚨 第 2 步：显式引入 models.py 里的所有表！
 # (极其关键：如果不在这里 import，SQLAlchemy 就不知道这些表的存在，启动时就不会自动建表，查询也会报错)
 # ---------------------------------------------------------
-from models import SessionRecord, Activity, Message, KnowledgeBase, ActivityKBMount, Employee
+from models import SessionRecord, Activity, Message, KnowledgeBase, ActivityKBMount, Employee, CustomerEmotion
 
 # ==========================================
 # 3. 初始化 AI 客户端与 Mem0 记忆引擎
@@ -204,7 +205,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
         try:
             t0 = time.perf_counter()
             # A. 查找 Session
-            log.debug("正在查询数据库获取 Session 信息...")
+            log.debug(f"Session {session_id} 正在查询数据库获取 Session 信息...")
             result = await db.execute(select(SessionRecord).where(SessionRecord.id == session_id))
             sess = result.scalar_one_or_none()
             metrics["A_DB_Session"] = time.perf_counter() - t0
@@ -214,14 +215,14 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 act_res = await db.execute(select(Activity).where(Activity.id == activity_id))
                 act = act_res.scalar_one_or_none()
                 if not act:
-                    log.error(f"❌ 前端传入的 activity_id={activity_id} 在 activities 表中不存在，放弃建会话")
+                    log.error(f"Session {session_id}❌ 前端传入的 activity_id={activity_id} 在 activities 表中不存在，放弃建会话")
                     return
-                log.info(f"📋 命中活动剧本: id={act.id} name={act.name} org={act.org_id} group={act.group_id}")
+                log.info(f"Session {session_id} 📋 命中活动剧本: id={act.id} name={act.name} org={act.org_id} group={act.group_id}")
 
                 matched = await match_employee_for_activity(db, act, log)
                 bind_employee_id = matched.id if matched is not None else None
                 if bind_employee_id is None:
-                    log.warning("⚠️ 未匹配到坐席，session.employee_id 将留空(NULL)")
+                    log.warning(f"Session {session_id} ⚠️ 未匹配到坐席，session.employee_id 将留空(NULL)")
 
                 sess = SessionRecord(
                     id=session_id,
@@ -236,18 +237,48 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 db.add(sess)
                 await db.flush()
                 log.success(
-                    f"✅ 新会话已落库 | session_id={session_id} org={sess.org_id} group={sess.group_id} "
+                    f"Session {session_id} ✅ 新会话已落库 | session_id={session_id} org={sess.org_id} group={sess.group_id} "
                     f"activity={sess.activity_id} employee={sess.employee_id} visitor={visitor_uid}"
                 )
             else:
                 log.info(
-                    f"🔁 命中已有 Session | org={sess.org_id} group={sess.group_id} "
+                    f"Session {session_id} 🔁 命中已有 Session | org={sess.org_id} group={sess.group_id} "
                     f"activity={sess.activity_id} employee={sess.employee_id} stage={sess.current_stage}"
                 )
+            session = sess
+            # A.5 立刻把访客的话落库 (独立提交，保证 LLM 失败也不会丢访客输入)
+            # stage/emotion 快照是访客说话当下的 session 状态 (LLM 还没跑)
+            db.add(Message(
+                session_id=session_id,
+                org_id=sess.org_id,
+                group_id=sess.group_id,
+                activity_id=sess.activity_id,
+                sender_type="visitor",
+                sender_id=visitor_uid,
+                content=visitor_msg,
+                stage_at_send=sess.current_stage,
+                emotion_at_send=sess.current_emotion,
+            ))
+            await db.commit()
+            log.info(f"Session {session_id} 📝 访客消息已落库 (session={session_id}, len={len(visitor_msg)}, stage={sess.current_stage}, emotion={sess.current_emotion})")
+
+            # A.6 接管挡板: 接管中则跳过 LLM/RAG/Mem0 检索，仅把访客消息写入 Mem0 后即返回
+            # (员工人工回复路径在 P2 实现，会负责把 employee 端的话也写 Mem0)
+            if sess.is_human_takeover:
+                log.info(f"Session {session_id} 🤝 已被员工 {sess.human_takeover_by} 接管 (at={sess.human_takeover_at})，跳过 LLM 推理")
+                try:
+                    visitor_memory_layer.add(
+                        [{"role": "user", "content": visitor_msg}],
+                        user_id=visitor_uid,
+                    )
+                    log.debug(f"Session {session_id} 🧠 takeover 下访客消息已写入 Mem0")
+                except Exception as e:
+                    log.warning(f"Session {session_id} ⚠️ takeover 下 Mem0 写入失败: {e}")
+                return
 
             # B. 查找 Activity
             t0 = time.perf_counter()
-            log.debug(f"当前 Session 绑定 Activity ID: {sess.activity_id}")
+            log.debug(f"Session {session_id} 当前 Session 绑定 Activity ID: {sess.activity_id}")
             activity_name = "未绑定活动"
             current_guideline = "自由交流"
             
@@ -258,8 +289,11 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                     activity_name = act.name
                     stages = json.loads(act.stages_config) if act.stages_config else {}
                     current_guideline = stages.get(sess.current_stage, "自由交流")
+            else:
+                log.info(f"Session {session_id} 活动不存在 {activity_id} 客户消息:{visitor_msg}")
+                return 
             metrics["B_DB_Activity"] = time.perf_counter() - t0
-            log.info(f"📋  活动剧本: [{activity_name}] | 当前阶段: [{sess.current_stage}]")
+            log.info(f"Session {session_id} 📋  活动剧本: [{activity_name}] | 当前阶段: [{sess.current_stage}]")
 
             # ==========================================
             # [优雅重构] B.5 调用 UtilRAG 获取静态知识
@@ -276,50 +310,97 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                     visitor_msg=visitor_msg, 
                     log=log
                 )
-                log.info(f"RAG GOT final_kb_context {(final_kb_context) } final_kb_instructions { (final_kb_instructions) }")
+                log.info(f"Session {session_id} RAG GOT final_kb_context {(final_kb_context) } final_kb_instructions { (final_kb_instructions) }")
             metrics["B5_RAG"] = time.perf_counter() - t0
             
             # C. 检索 Mem0 记忆
             t0 = time.perf_counter()
-            log.debug("正在调用 Mem0 检索长期记忆...")
+            log.debug(f"Session {session_id} 正在调用 Mem0 检索长期记忆...")
             try:
                 relevant_memories = visitor_memory_layer.search(query=visitor_msg, filters={"user_id": visitor_uid} )
                 memory_context = UtilMem.ProcMem( relevant_memories , log=log)
-                log.success(f"💡 唤醒记忆成功，条数: {len(relevant_memories)}")
+                log.success(f"Session {session_id} 💡 唤醒记忆成功，条数: {len(relevant_memories)}")
             except Exception as me:
-                log.warning(f"⚠️ Mem0 检索失败 (可能是首次连接): {me}  {traceback.format_exc()} ")
+                log.warning(f"Session {session_id} ⚠️ Mem0 检索失败 (可能是首次连接): {me}  {traceback.format_exc()} ")
                 memory_context = "暂无"
             metrics["C_Mem0_Search"] = time.perf_counter() - t0
             
-            # D. 调用大模型
+            # D. 调用大模型 (已重构为带质检与状态裁判的高级引擎)
             t0 = time.perf_counter()
-            log.info("📡 正在呼叫云端大模型 (LLM)...")
+            log.info(f"Session {session_id} 📡 正在呼叫云端大模型 (LLM)，附带质检与状态机裁判...")
+            
+            # 1. 提取当前状态机所需配料 (防空指针处理)
+            current_stage_key = session.current_stage
+            stages_config = {} 
+            try:
+                stages_config = json.loads(act.stages_config)
+            except Exception as e:
+                logger.info(f"Session {session_id} parse json stages config error.")
+                pass 
+            stage_config = stages_config.get(current_stage_key, {}) if act.stages_config else {}
+            allowed_next_stages = stage_config.get("next_possible_stages", [])
+            stage_guideline = stage_config.get("ai_guideline", "自然对话即可。")
+            global_guideline = act.global_guideline if act.global_guideline else "无特殊全局限制。"
             start_time = asyncio.get_event_loop().time()
-            # 构建结构化的 System 字典
-            system_prompt_dict = {
-                "role_definition": f"{YQrequirement}",
-                "current_task": current_guideline,
-                "kb_special_instructions": final_kb_instructions,
-                "kb_standard_context": final_kb_context,
-                "customer_memory_profile": memory_context
-            } 
-            system_prompt_json = json.dumps(system_prompt_dict, ensure_ascii=False, indent=2)
-            log.debug(f"🧮 提交给大模型的 JSON:\n{system_prompt_json}")
-
-            messages = [
-                {"role": "system", "content": system_prompt_json},
-                {"role": "user", "content": visitor_msg}
-            ]
-            log.info(f"LLM message {messages}")
-            response = await llm_client.chat.completions.create(
-                model=settings.LLM_MODEL_NAME,
-                messages=messages,
-                max_tokens=2000,
-                temperature=0.7
+            # 2. 呼叫我们封装好的高内聚 LLM 引擎
+            ai_decision = await generate_ai_reply_with_retry(
+                session_id=session_id,
+                llm_client=llm_client,
+                model_name=settings.LLM_MODEL_NAME,
+                visitor_msg=visitor_msg,
+                # 传入上下文参数
+                activity_name=act.name,
+                current_stage=current_stage_key,
+                allowed_next_stages=allowed_next_stages,
+                global_guideline=global_guideline,
+                stage_guideline=stage_guideline,
+                kb_context=final_kb_context,
+                kb_instructions=final_kb_instructions,
+                memory_context=memory_context,
+                max_retries=3
             )
+            
+            # 记录大模型耗时 (完美兼容你之前的监控逻辑)
             metrics["D_LLM_Chat"] = time.perf_counter() - t0
-            log.info(f"LLM resp { response }")
-            ai_reply_text = response.choices[0].message.content.strip()
+            log.info(f"LLM 裁判最终决策结果: {ai_decision}")
+            
+            # 3. 解析大模型的双重输出
+            # 拿到准备发给客户的话 (无缝对接你后面的代码)
+            ai_reply_text = ai_decision["reply_content"]
+            
+            # 拿到系统内部流转数据
+            judged_next_stage = ai_decision.get("next_stage", current_stage_key)
+            detected_lang = ai_decision.get("detected_language", "unknown")
+            reason = ai_decision.get("stage_reason", "无")
+            tags = ai_decision.get("extracted_tags", [])
+            detected_emotion = ai_decision.get("customer_emotion", CustomerEmotion.CALM.value)
+
+            log.info(f"🗣️ 访客语言: {detected_lang} | 裁判判断流转至: {judged_next_stage} | 情绪: {detected_emotion} | 标签: {tags} | 理由: {reason}")
+
+            # 4. 核心：原子更新 stage / emotion / 回合数。
+            #    用 SQL 表达式 (col = col + 1) 防止 visitor 并发连发时的读改写竞态。
+            stage_flipped = judged_next_stage != current_stage_key
+            if stage_flipped:
+                log.warning(f"🔄 客户触发 SOP 流转: 【{current_stage_key}】 ➡️ 【{judged_next_stage}】 (stage_turn 重置为 1)")
+                new_stage_turn = 1
+            else:
+                # 留在原 stage：自增。SessionRecord.stage_turn_count 在表达式里就是 SQL 字段引用。
+                new_stage_turn = SessionRecord.stage_turn_count + 1
+
+            await db.execute(
+                update(SessionRecord)
+                .where(SessionRecord.id == session_id)
+                .values(
+                    current_stage=judged_next_stage,
+                    current_emotion=detected_emotion,
+                    total_turn_count=SessionRecord.total_turn_count + 1,
+                    stage_turn_count=new_stage_turn,
+                )
+            )
+            await db.commit()
+            # 把内存里的 ORM 对象与 DB 重新对齐 (后续 employee Message insert 要用 sess.current_stage / current_emotion)
+            await db.refresh(sess)
+            log.debug(f"Session {session_id} 状态已更新: stage={sess.current_stage}, emotion={sess.current_emotion}, total_turn={sess.total_turn_count}, stage_turn={sess.stage_turn_count}")
             
             duration = asyncio.get_event_loop().time() - start_time
             log.success(f"✨ LLM 生成完毕 (耗时: {duration:.2f}s): {ai_reply_text[:30]}...")
@@ -328,10 +409,19 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             log.debug("正在写入聊天明细到 MySQL...")
             t0 = time.perf_counter()
             db.add(Message(
-                session_id=session_id, org_id=sess.org_id, group_id=sess.group_id,
-                activity_id=sess.activity_id, sender_type="employee", content=ai_reply_text
+                session_id=session_id,
+                org_id=sess.org_id,
+                group_id=sess.group_id,
+                activity_id=sess.activity_id,
+                sender_type="employee",
+                sender_id=sess.employee_id,
+                content=ai_reply_text,
+                stage_at_send=sess.current_stage,       # post-flip stage (db.refresh 之后的)
+                emotion_at_send=sess.current_emotion,   # 这一轮 LLM 检测到的情绪
+                llm_decision_raw=ai_decision,           # LLM 完整决策快照，供后台复盘
             ))
             await db.commit()
+            log.info(f"📝 AI 回复已落库 (session={session_id}, employee={sess.employee_id}, len={len(ai_reply_text)})")
             metrics["E_DB_Save"] = time.perf_counter() - t0
             t0 = time.perf_counter()
             log.info(f"📤 正在通过 WebSocket 推送指令到插件: {connection_id}")
