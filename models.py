@@ -111,11 +111,11 @@ class SessionRecord(Base):
 
     # === P1 新增: 情绪 + 多维回合数 + 接管审计 ===
     current_emotion = Column(
-        SQLEnum(CustomerEmotion),
-        default=CustomerEmotion.CALM,
-        nullable=False,
-        comment="访客最近一次被识别到的情绪",
-    )
+            SQLEnum(CustomerEmotion, values_callable=lambda obj: [e.value for e in obj]),
+            default="calm",  # 直接使用字符串默认值
+            nullable=False,
+            comment="访客最近一次被识别到的情绪",
+        )
     total_turn_count = Column(Integer, default=0, nullable=False, comment="总对话回合数 (以访客发一条计一回合)")
     stage_turn_count = Column(Integer, default=0, nullable=False, comment="在当前 stage 停留的回合数")
     is_human_takeover = Column(Boolean, default=False, nullable=False, index=True, comment="是否已被人工接管；True 时不再调 LLM")
@@ -146,7 +146,12 @@ class Message(Base):
 
     # === P1 新增: 这条消息发出时 session 的状态快照 ===
     stage_at_send = Column(String(50), nullable=True, index=True, comment="发出时 session 所处 stage")
-    emotion_at_send = Column(SQLEnum(CustomerEmotion), nullable=True, comment="发出时识别到的访客情绪")
+    emotion_at_send = Column(
+            SQLEnum(CustomerEmotion, values_callable=lambda obj: [e.value for e in obj]),
+            default="calm",  # 直接使用字符串默认值
+            nullable=False,
+            comment="访客最近一次被识别到的情绪",
+        )
     llm_decision_raw = Column(JSON, nullable=True, comment="仅 sender_type=employee 时有值: LLM 当轮完整返回")
 
     created_at = Column(DateTime, default=datetime.utcnow)

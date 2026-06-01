@@ -736,6 +736,7 @@ class MessageOut(BaseModel):
     sender_type: str
     sender_id: Optional[str] = None
     content: str
+    emotion_at_send: Optional[str] = None
     created_at: Optional[datetime] = None
 
     class Config:
