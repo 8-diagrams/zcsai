@@ -267,3 +267,80 @@ VALUES (
     'emp_human_001'
 );
 
+-- =========================================================
+-- P2: 规则引擎 + 转人工通知 + Webhook 死信
+-- 与 migrations/006_rules_engine_and_takeover_audit.sql 保持一致
+-- =========================================================
+
+-- 1) 规则定义表
+CREATE TABLE activity_event_rules (
+    id VARCHAR(50) PRIMARY KEY,
+    org_id VARCHAR(50) NOT NULL,
+    activity_id VARCHAR(50) NULL COMMENT 'NULL = 该 org 所有 activity 适用',
+    name VARCHAR(100) NOT NULL,
+    priority INT NOT NULL DEFAULT 0,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    phase ENUM('pre_llm','post_llm') NOT NULL DEFAULT 'post_llm',
+    conditions JSON NOT NULL,
+    actions JSON NOT NULL,
+    fire_policy VARCHAR(30) NOT NULL DEFAULT 'once_per_session',
+    short_circuit TINYINT(1) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_org_act_active (org_id, activity_id, is_active),
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
+    FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 2) 规则触发审计表
+CREATE TABLE session_rule_fires (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    session_id VARCHAR(50) NOT NULL,
+    rule_id VARCHAR(50) NOT NULL,
+    fired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    fired_at_stage VARCHAR(50) NULL,
+    fired_at_total_turn INT NULL,
+    fired_at_stage_turn INT NULL,
+    actions_executed JSON NULL,
+    UNIQUE KEY uq_session_rule_once (session_id, rule_id),
+    INDEX idx_session (session_id),
+    INDEX idx_rule (rule_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3) 员工通知表
+CREATE TABLE agent_notifications (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    org_id VARCHAR(50) NOT NULL,
+    group_id VARCHAR(50) NULL,
+    target_employee_id VARCHAR(50) NULL,
+    session_id VARCHAR(50) NULL,
+    rule_id VARCHAR(50) NULL,
+    level ENUM('info','warning','urgent') DEFAULT 'info',
+    title VARCHAR(200) NOT NULL,
+    body TEXT NULL,
+    is_read TINYINT(1) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_target (org_id, target_employee_id, is_read),
+    INDEX idx_group (org_id, group_id, is_read)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 4) Webhook 死信表
+CREATE TABLE webhook_dead_letters (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    session_id VARCHAR(50) NULL,
+    rule_id VARCHAR(50) NULL,
+    url VARCHAR(500) NOT NULL,
+    method VARCHAR(10) NOT NULL,
+    payload JSON NULL,
+    last_error TEXT NULL,
+    attempts INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_session (session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 5) messages 表加 fired_by_rule_id
+ALTER TABLE messages
+    ADD COLUMN fired_by_rule_id VARCHAR(50) NULL COMMENT '该消息由哪条规则触发' AFTER llm_decision_raw,
+    ADD INDEX idx_fired_rule (fired_by_rule_id);
+
+

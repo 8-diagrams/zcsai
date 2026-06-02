@@ -1,0 +1,155 @@
+  4 张表协作（migrations/006_rules_engine_and_takeover_audit.sql）：
+
+  ┌──────────────────────┬───────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │          表          │         角色          │                                                               关键字段                                                                │
+  ├──────────────────────┼───────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ activity_event_rules │ 规则定义本体          │ org_id / activity_id(NULL=全公司通用) / phase(pre_llm/post_llm) / conditions JSON / actions JSON / priority / fire_policy /           │
+  │                      │                       │ short_circuit / is_active                                                                                                             │
+  ├──────────────────────┼───────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ session_rule_fires   │ 触发审计 + 防复读     │ session_id + rule_id 联合唯一约束；fired_at_stage / fired_at_total_turn / actions_executed                                            │
+  ├──────────────────────┼───────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ agent_notifications  │ 转人工/系统通知收件箱 │ target_employee_id(NULL=同组广播) / level / title / body                                                                              │
+  ├──────────────────────┼───────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ webhook_dead_letters │ webhook 派发失败留底  │ url / payload / last_error / attempts                                                                                                 │
+  └──────────────────────┴───────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  加一列：messages.fired_by_rule_id — 标记"这条消息不是 LLM 发的，是规则触发发出去的"。
+
+  ---
+  一次访客消息的完整流程（main.py:308 (main.py#L308) 起）
+
+  访客发一句话 → WebSocket /ws/{activity}/{visitor}
+    │
+    ▼
+  ① 访客消息落库 (messages, sender_type=visitor)
+    │
+    ▼
+  ② 接管挡板:  sess.is_human_takeover == True?  ──► 跳过 LLM, 只写 Mem0, 等真人 /agent-reply
+    │ no
+    ▼
+  ③ Pre-LLM 规则评估 (RuleEngine.load_active_rules phase="pre_llm")
+     ├─ 用 sess 当前 stage/emotion/回合数 组装 ctx (此时 LLM 还没跑, tags/lang 为空)
+     ├─ 按 priority desc 匹配 → 命中后查 fire_policy 是否允许这轮触发
+     └─ 命中 transfer_to_human / block_llm → return (本轮不调 LLM)
+    │
+    ▼
+  ④ 跑 LLM:  返回 reply_content / next_stage / customer_emotion / extracted_tags ...
+    │
+    ▼
+  ⑤ 原子更新 session:  SQL 表达式 total_turn+=1, stage_turn (跳了重置为 1 否则 +1), emotion/stage 改写
+    │
+    ▼
+  ⑥ Post-LLM 规则评估 (phase="post_llm")
+     ├─ 用 [prev_stage, prev_emotion] + [new_stage, new_emotion, tags, lang] + [新回合数] 组装 ctx
+     ├─ 衍生字段: stage_flipped / stage_flipped_to / emotion_degraded (calm→anger 这种)
+     ├─ 匹配 → 派发动作
+     │     send_text/link/image/video/payment → 写 message + WS push 访客
+     │     transfer_to_human → 改 sess.is_human_takeover, 写通知, WS push 给员工
+     │     webhook → asyncio.create_task 异步 POST, 失败 3 次入死信表
+     │     override_reply → 覆盖即将发给访客的 LLM 文本
+     └─ 每条命中规则都写一行 session_rule_fires (唯一约束兜底"复读机")
+    │
+    ▼
+  ⑦ LLM 回复消息落库 + WS push 访客 + Mem0 刻录
+
+  ---
+  规则的"应用范围"如何匹配
+  
+  RuleEngine.load_active_rules（RuleEngine.py:152 (RuleEngine.py#L152)）一句 SQL：
+
+  WHERE org_id = ?
+    AND is_active = TRUE
+    AND phase = ?  -- pre_llm or post_llm
+    AND (activity_id = ?  OR  activity_id IS NULL)
+  ORDER BY priority DESC
+
+  - activity_id = 具体 ID 的规则 → 只对该活动生效
+  - activity_id = NULL 的规则 → 该公司所有活动通用
+  - 两者并集生效；按 priority 高的先评估；short_circuit=True 命中后停止评估更低优先级
+
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+
+  {
+    "all": [                    // 全部满足
+      {"field": "new_emotion",      "op": "in",  "value": ["impatience","anger"]},
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+
+  {
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+  ---
+  条件 DSL（RuleEngine.py:50 (RuleEngine.py#L50)）
+
+  {
+    "all": [                    // 全部满足
+      {"field": "new_emotion",      "op": "in",  "value": ["impatience","anger"]},
+      {"field": "stage_turn_count", "op": "gte", "value": 3},
+      {"field": "emotion_degraded", "op": "eq",  "value": true}
+    ],
+    "any": [...]                // 至少一个满足 (可选)
+  }
+
+  字段白名单：new/prev_emotion · new/prev_stage · stage_flipped · stage_flipped_to · total/stage_turn_count · extracted_tags · emotion_degraded · detected_language
+  操作符白名单：eq / neq / in / not_in / gte / gt / lte / lt / contains / not_contains
+
+  非白名单的 field/op 一律返回 False（防注入 + 防误配）。
+
+  ---
+  fire_policy 防复读
+
+  ┌──────────────────┬───────────────────────────────────────────────────────┐
+  │      policy      │                       判定方式                        │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ once_per_session │ 查 session_rule_fires 有无此 rule_id；DB 唯一约束兜底 │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ once_per_stage   │ 查同 stage 下有无此 rule_id                           │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ every_n_turns:N  │ 当前 total_turn_count − 上次 fired_at_total_turn ≥ N  │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ always           │ 不限制                                                │
+  └──────────────────┴───────────────────────────────────────────────────────┘
+
+  ---
+  一个完整例子
+
+  配置："客户在【报价阶段】卡了 5 个回合都没进入【逼单】，且情绪变得急躁"
+
+  {
+    "name": "防僵局-报价期纠结自动发优惠券",
+    "activity_id": "act_001",
+    "phase": "post_llm",
+    "priority": 100,
+    "fire_policy": "once_per_session",
+    "conditions": {
+      "all": [
+        {"field": "new_stage",         "op": "eq",  "value": "stage_2_solution"},
+        {"field": "stage_turn_count",  "op": "gte", "value": 5},
+        {"field": "new_emotion",       "op": "in",  "value": ["hesitation","impatience"]}
+      ]
+    },
+    "actions": [
+      {"type": "send_text", "content": "看您在比对方案，特意申请了一张隐藏券给您"},
+      {"type": "send_payment_link", "url": "https://pay/...", "amount": 99, "currency": "CNY"},
+      {"type": "webhook", "url": "https://crm/api/lead-stuck", "method": "POST"}
+    ]
+  }
+
+  第 5 轮访客继续犹豫 → Post-LLM 评估命中 → 串行执行 3 个动作（文本+支付链接 WS 推给访客；webhook 异步通知 CRM）→ 写 session_rule_fires。第 6 轮再卡，唯一约束 + once_per_session 拦住，不再重复发券。
+
+

@@ -20,6 +20,7 @@ const loading = ref(false)
 const selected = ref(null)
 const messages = ref([])
 const msgLoading = ref(false)
+const stagesByActivity = ref({})  // activity_id -> { stage_code: { name, ... } }
 
 const loadOptions = async () => {
   if (!orgId.value) return
@@ -29,6 +30,7 @@ const loadOptions = async () => {
   ])
   groupOptions.value = [{ title: '全部组', value: null }, ...gs.map(g => ({ title: g.name, value: g.id }))]
   activityOptions.value = [{ title: '全部活动', value: null }, ...acts.map(a => ({ title: a.name, value: a.id }))]
+  stagesByActivity.value = Object.fromEntries(acts.map(a => [a.id, a.stages_config || {}]))
 }
 
 const reload = async () => {
@@ -73,6 +75,21 @@ watch(filters, reload, { deep: true })
 
 const fmtTime = (t) => t ? new Date(t).toLocaleString() : ''
 const statusColor = (s) => ({ active: 'success', closed: 'default', transferred: 'warning' }[s] || 'default')
+const EMOTION_META = {
+  calm:       { label: '平静', color: 'default' },
+  joy:        { label: '喜悦', color: 'success' },
+  excited:    { label: '兴奋', color: 'success' },
+  hesitation: { label: '犹豫', color: 'info' },
+  impatience: { label: '急躁', color: 'warning' },
+  anger:      { label: '愤怒', color: 'error' },
+}
+const emotionMeta = (e) => EMOTION_META[e] || null
+const stageLabel = (code) => {
+  if (!code) return ''
+  const aid = selected.value?.activity_id
+  const cfg = aid && stagesByActivity.value[aid]
+  return cfg?.[code]?.name || code
+}
 </script>
 
 <template>
@@ -148,11 +165,27 @@ const statusColor = (s) => ({ active: 'success', closed: 'default', transferred:
               <VProgressCircular indeterminate size="24" />
             </div>
             <div v-for="m in messages" :key="m.id" class="mb-3">
-              <div class="d-flex align-center" style="gap:8px">
+              <div class="d-flex align-center flex-wrap" style="gap:8px">
                 <VChip size="x-small" :color="{
                   visitor: 'default', employee: 'primary', system: 'warning'
                 }[m.sender_type] || 'default'">
                   {{ m.sender_type }}
+                </VChip>
+                <VChip
+                  v-if="m.stage_at_send"
+                  size="x-small"
+                  variant="outlined"
+                  color="info"
+                >
+                  {{ stageLabel(m.stage_at_send) }}
+                </VChip>
+                <VChip
+                  v-if="m.sender_type === 'visitor' && emotionMeta(m.emotion_at_send)"
+                  size="x-small"
+                  variant="tonal"
+                  :color="emotionMeta(m.emotion_at_send).color"
+                >
+                  {{ emotionMeta(m.emotion_at_send).label }}
                 </VChip>
                 <span class="text-caption text-medium-emphasis">{{ m.sender_id }} · {{ fmtTime(m.created_at) }}</span>
               </div>

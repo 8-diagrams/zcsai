@@ -1,0 +1,147 @@
+❯ new_stage , prev_stage,  stage_flipped, stage_flipped_to 怎么分?                                                                                                        
+  ⎿  Retrying in 0s · attempt 8/10
+
+⏺ 这 4 个 stage 相关字段什么时候用
+
+  它们都源自一次 LLM 跑完后状态的前后对比（RuleEngine.py:56 build_context_post_llm）：
+
+  prev_stage   = sess.current_stage          # LLM 前 session 在哪个 stage
+  new_stage    = ai_decision["next_stage"]   # LLM 判断这一轮应去哪个 stage
+  stage_flipped     = (new_stage != prev_stage)
+  stage_flipped_to  = new_stage if stage_flipped else None
+
+  ---
+  直观映射表
+  
+  假设访客上一轮在 stage_2_solution（方案推销），本轮 LLM 判定转到 stage_4_push（逼单）：
+
+  ┌──────────────────┬──────────────────┬─────────────────────────────────────┐
+  │       字段       │        值        │                语义                 │
+  ├──────────────────┼──────────────────┼─────────────────────────────────────┤
+  │ prev_stage       │ stage_2_solution │ "从哪儿来"                          │
+  ├──────────────────┼──────────────────┼─────────────────────────────────────┤
+  │ new_stage        │ stage_4_push     │ "去哪儿/现在在哪儿"                 │
+  ├──────────────────┼──────────────────┼─────────────────────────────────────┤
+  │ stage_flipped    │ true             │ "本轮发生了跃迁吗"                  │
+  ├──────────────────┼──────────────────┼─────────────────────────────────────┤
+  │ stage_flipped_to │ stage_4_push     │ "跃迁的终点是什么"；没跃迁时为 null │
+  └──────────────────┴──────────────────┴─────────────────────────────────────┘
+
+  如果本轮 LLM 判定保持原 stage（还在方案期磨）：
+
+  ┌──────────────────┬──────────────────┐
+  │       字段       │        值        │
+  ├──────────────────┼──────────────────┤
+  │ prev_stage       │ stage_2_solution │
+  ├──────────────────┼──────────────────┤
+  │ new_stage        │ stage_2_solution │
+  ├──────────────────┼──────────────────┤
+  │ stage_flipped    │ false            │
+  ├──────────────────┼──────────────────┤
+  │ stage_flipped_to │ null             │
+  └──────────────────┴──────────────────┘
+
+  ---
+  4 个字段的适用场景
+  
+  new_stage — "当前停在哪个阶段"
+
+  ▎ 最常用。表达"客户现在处于 X 阶段"的所有规则都用它。
+
+  {"field": "new_stage", "op": "eq", "value": "stage_2_solution"}
+  // 含义: 不管刚跳进来还是磨了 N 轮, 只要现在在方案期, 就匹配
+
+  配合 stage_turn_count 表达"卡死在某阶段"：
+  {"all": [
+    {"field": "new_stage",        "op": "eq",  "value": "stage_2_solution"},
+    {"field": "stage_turn_count", "op": "gte", "value": 5}
+  ]}
+  // 卡在方案期 ≥ 5 回合
+
+  ---
+  prev_stage — "从哪个阶段来"
+  
+  ▎ 用于"上一刻还在 X 阶段、现在不在了"的回溯类规则。不常用，但有时关键。
+
+  {"all": [
+    {"field": "prev_stage", "op": "eq", "value": "stage_4_push"},
+    {"field": "new_stage",  "op": "eq", "value": "stage_3_objection"}
+  ]}
+  // 含义: 已经到了逼单阶段, 又被打回到异议处理 = 危险信号, 客户要跑
+
+  或者：
+  {"field": "prev_stage", "op": "neq", "value": "stage_6_aftersales"}
+  // 不是从售后回来的 (排除老客二次进线)
+
+  ---
+  stage_flipped — "这一轮是否发生了跃迁" (bool)
+
+  ▎ 用于"跃迁瞬间"做事，不关心从哪到哪。
+
+  {"field": "stage_flipped", "op": "eq", "value": true}
+  // 含义: 只要本轮发生过 stage 切换就触发, 比如:
+  //        - 打点统计每次跃迁
+  //        - 跃迁瞬间发一个 webhook 给 CRM
+
+  反过来：
+  {"field": "stage_flipped", "op": "eq", "value": false}
+  // 含义: 本轮原地踏步, 用来配合 stage_turn_count_gte 抓"僵局"
+  
+  ---
+  stage_flipped_to — "这一轮跃迁的终点" (string 或 null)
+  
+
+  {"field": "stage_flipped_to", "op": "eq", "value": "stage_4_push"}
+  // 含义: 恰好本轮刚跳进逼单 → 立刻发支付链接
+  //   - 客户上一秒还在异议处理 (prev_stage=stage_3) → 这一秒被判定进入 stage_4 (new_stage=stage_4)
+  //   - stage_flipped=true, stage_flipped_to=stage_4_push, 命中!
+  //   - 下一轮如果还在 stage_4 (没再跳了), new_stage=stage_4 但 stage_flipped_to=null, 不再命中
+
+  这就是 new_stage 和 stage_flipped_to 的核心区别 ——
+
+  ┌─────────────────────────────────────┬────────────────────────────────────────┐
+  │          用 new_stage == X          │        用 stage_flipped_to == X        │
+  ├─────────────────────────────────────┼────────────────────────────────────────┤
+  │ 只要当前在 X 阶段就命中（持续状态） │ 只在"刚跨进 X"的那一轮命中（瞬时事件） │
+  ├─────────────────────────────────────┼────────────────────────────────────────┤
+  │ 配 fire_policy 才能避免每轮触发     │ 天然只触发一次                         │
+  └─────────────────────────────────────┴────────────────────────────────────────┘
+
+  ---
+  典型组合"配方"
+
+  1. 进入逼单立刻发支付链接（瞬时事件）
+  {"all": [{"field": "stage_flipped_to", "op": "eq", "value": "stage_4_push"}]}
+
+  2. 持续卡在方案期（持续状态）
+  {"all": [
+    {"field": "new_stage",        "op": "eq",  "value": "stage_2_solution"},
+    {"field": "stage_turn_count", "op": "gte", "value": 5}
+  ]}
+
+  3. 后退！从逼单跌回异议（危险回退）
+  {"all": [
+    {"field": "prev_stage", "op": "in", "value": ["stage_4_push","stage_6_aftersales"]},
+    {"field": "new_stage",  "op": "eq", "value": "stage_3_objection"}
+  ]}
+
+  4. 每次跃迁都打点（webhook 统计）
+  {"all": [{"field": "stage_flipped", "op": "eq", "value": true}]}
+  // fire_policy: always
+
+  5. 跃迁 + 情绪不好（重点客户）
+  {"all": [
+    {"field": "stage_flipped",   "op": "eq", "value": true},
+    {"field": "new_emotion",     "op": "in", "value": ["hesitation","impatience"]}
+  ]}
+
+  ---
+  速记口诀
+
+  - new_stage = 现在在哪（持续）
+  - prev_stage = 上一刻在哪（轨迹）
+  - stage_flipped = 这一刻有没有动（瞬时 bool）
+  - stage_flipped_to = 这一刻跳进哪儿了（瞬时目标，最适合"一次性"动作）
+
+  绝大多数业务规则只需要 new_stage + 可选 stage_turn_count；少数高级场景才用到后三个。
+

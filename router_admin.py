@@ -2,7 +2,7 @@
 import json
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -21,7 +21,9 @@ from deps import (
 )
 from models import (
     Activity,
+    ActivityEventRule,
     ActivityKBMount,
+    AgentNotification,
     Employee,
     Group,
     KnowledgeBase,
@@ -29,8 +31,10 @@ from models import (
     Organization,
     Referrer,
     SessionRecord,
+    SessionRuleFire,
     User,
 )
+import RuleEngine
 from router_auth import UserOut
 
 router = APIRouter(prefix="/api", tags=["admin"])
@@ -736,6 +740,7 @@ class MessageOut(BaseModel):
     sender_type: str
     sender_id: Optional[str] = None
     content: str
+    stage_at_send: Optional[str] = None
     emotion_at_send: Optional[str] = None
     created_at: Optional[datetime] = None
 
@@ -1025,3 +1030,413 @@ async def stats_overview(
         sessions=await _count(SessionRecord),
         messages=await _count(Message),
     )
+
+
+# =============================================================
+# 10. 真人接管 / 释放 / 人工发消息
+# =============================================================
+class TakeoverIn(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/sessions/{sid}/takeover")
+async def takeover_session(
+    sid: str,
+    body: TakeoverIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """坐席主动接管:之后该 session 跳过 LLM,所有访客消息只入库不回复,等人工通过 /agent-reply 发。"""
+    sess = await _load_session_or_403(sid, db, user)
+    sess.is_human_takeover = True
+    sess.human_takeover_at = datetime.utcnow()
+    sess.human_takeover_by = user.employee_id or user.id
+    if user.employee_id:
+        sess.employee_id = user.employee_id  # 接管者成为本会话当前坐席
+    db.add(Message(
+        session_id=sid,
+        org_id=sess.org_id,
+        group_id=sess.group_id,
+        activity_id=sess.activity_id,
+        sender_type="system",
+        sender_id=user.id,
+        content=f"[系统] {user.display_name or user.id} 已接管会话" + (f": {body.reason}" if body.reason else ""),
+    ))
+    await db.commit()
+    return {"status": "ok", "human_takeover_at": sess.human_takeover_at}
+
+
+@router.post("/sessions/{sid}/release")
+async def release_session(
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """放回 AI 继续接待。"""
+    sess = await _load_session_or_403(sid, db, user)
+    if not sess.is_human_takeover:
+        return {"status": "noop", "msg": "会话未处于人工接管中"}
+    sess.is_human_takeover = False
+    sess.human_takeover_at = None
+    sess.human_takeover_by = None
+    db.add(Message(
+        session_id=sid,
+        org_id=sess.org_id,
+        group_id=sess.group_id,
+        activity_id=sess.activity_id,
+        sender_type="system",
+        sender_id=user.id,
+        content=f"[系统] {user.display_name or user.id} 已释放会话, AI 重新接管",
+    ))
+    await db.commit()
+    return {"status": "ok"}
+
+
+class AgentReplyIn(BaseModel):
+    content: str
+
+
+@router.post("/sessions/{sid}/agent-reply", response_model=MessageOut)
+async def agent_reply(
+    sid: str,
+    body: AgentReplyIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """坐席在接管中发消息: 写 Message + Mem0 + WS push 给访客。"""
+    sess = await _load_session_or_403(sid, db, user)
+    if not sess.is_human_takeover:
+        raise HTTPException(400, "会话未处于人工接管中,请先 /takeover")
+    text = (body.content or "").strip()
+    if not text:
+        raise HTTPException(400, "消息内容不能为空")
+    msg = Message(
+        session_id=sid,
+        org_id=sess.org_id,
+        group_id=sess.group_id,
+        activity_id=sess.activity_id,
+        sender_type="employee",
+        sender_id=user.employee_id or user.id,
+        content=text,
+        stage_at_send=sess.current_stage,
+        emotion_at_send=sess.current_emotion,
+    )
+    db.add(msg)
+    await db.commit()
+    await db.refresh(msg)
+
+    # 写 Mem0 + WS push 给访客 (异步, 失败不阻塞 API)
+    try:
+        from main import visitor_memory_layer, manager as visitor_manager
+        if sess.visitor_uid:
+            visitor_memory_layer.add(
+                [{"role": "assistant", "content": text}],
+                user_id=sess.visitor_uid,
+            )
+        if sess.activity_id and sess.visitor_uid:
+            conn_id = f"{sess.activity_id}_{sess.visitor_uid}"
+            await visitor_manager.send_to_client(conn_id, {
+                "action": "inject_reply",
+                "data": {"session_id": sid, "text": text, "simulate_typing": True, "by": "human"},
+            })
+    except Exception:
+        # 记日志即可,不向调用方暴露
+        from loguru import logger as _lg
+        _lg.exception(f"agent_reply 推送/Mem0 失败 sid={sid}")
+    return msg
+
+
+# =============================================================
+# 11. 规则引擎 CRUD + dry-run + metadata
+# =============================================================
+class RuleIn(BaseModel):
+    activity_id: Optional[str] = None
+    name: str
+    priority: int = 0
+    is_active: bool = True
+    phase: str = Field("post_llm", description="pre_llm | post_llm")
+    conditions: dict
+    actions: List[dict]
+    fire_policy: str = "once_per_session"
+    short_circuit: bool = False
+
+
+class RulePatchIn(BaseModel):
+    activity_id: Optional[str] = None
+    name: Optional[str] = None
+    priority: Optional[int] = None
+    is_active: Optional[bool] = None
+    phase: Optional[str] = None
+    conditions: Optional[dict] = None
+    actions: Optional[List[dict]] = None
+    fire_policy: Optional[str] = None
+    short_circuit: Optional[bool] = None
+
+
+class RuleOut(BaseModel):
+    id: str
+    org_id: str
+    activity_id: Optional[str] = None
+    name: str
+    priority: int
+    is_active: bool
+    phase: str
+    conditions: dict
+    actions: List[dict]
+    fire_policy: str
+    short_circuit: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/orgs/{org_id}/event-rules", response_model=List[RuleOut])
+async def list_event_rules(
+    org_id: str,
+    activity_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_same_org(user, org_id)
+    stmt = select(ActivityEventRule).where(ActivityEventRule.org_id == org_id)
+    if activity_id:
+        stmt = stmt.where(
+            (ActivityEventRule.activity_id == activity_id)
+            | (ActivityEventRule.activity_id.is_(None))
+        )
+    stmt = stmt.order_by(desc(ActivityEventRule.priority), desc(ActivityEventRule.created_at))
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+@router.post("/orgs/{org_id}/event-rules", response_model=RuleOut)
+async def create_event_rule(
+    org_id: str,
+    body: RuleIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    if body.activity_id:
+        # 校验 activity 属于本 org
+        a_res = await db.execute(
+            select(Activity).where(Activity.id == body.activity_id, Activity.org_id == org_id)
+        )
+        if not a_res.scalar_one_or_none():
+            raise HTTPException(404, "activity_id 不存在或不属于本公司")
+    obj = ActivityEventRule(
+        id=_gen_id("rule"),
+        org_id=org_id,
+        activity_id=body.activity_id,
+        name=body.name,
+        priority=body.priority,
+        is_active=body.is_active,
+        phase=body.phase,
+        conditions=body.conditions,
+        actions=body.actions,
+        fire_policy=body.fire_policy,
+        short_circuit=body.short_circuit,
+    )
+    db.add(obj)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.patch("/orgs/{org_id}/event-rules/{rid}", response_model=RuleOut)
+async def update_event_rule(
+    org_id: str,
+    rid: str,
+    body: RulePatchIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(
+        select(ActivityEventRule).where(
+            ActivityEventRule.id == rid,
+            ActivityEventRule.org_id == org_id,
+        )
+    )
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "规则不存在")
+    for f in ("activity_id", "name", "priority", "is_active", "phase",
+              "conditions", "actions", "fire_policy", "short_circuit"):
+        v = getattr(body, f)
+        if v is not None:
+            setattr(obj, f, v)
+    await db.commit()
+    await db.refresh(obj)
+    return obj
+
+
+@router.delete("/orgs/{org_id}/event-rules/{rid}")
+async def delete_event_rule(
+    org_id: str,
+    rid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(
+        select(ActivityEventRule).where(
+            ActivityEventRule.id == rid,
+            ActivityEventRule.org_id == org_id,
+        )
+    )
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "规则不存在")
+    await db.delete(obj)
+    await db.commit()
+    return {"status": "ok"}
+
+
+class RuleToggleIn(BaseModel):
+    is_active: bool
+
+
+@router.post("/orgs/{org_id}/event-rules/{rid}/toggle")
+async def toggle_event_rule(
+    org_id: str,
+    rid: str,
+    body: RuleToggleIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("group_admin")),
+):
+    assert_same_org(user, org_id)
+    res = await db.execute(
+        select(ActivityEventRule).where(
+            ActivityEventRule.id == rid,
+            ActivityEventRule.org_id == org_id,
+        )
+    )
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "规则不存在")
+    obj.is_active = body.is_active
+    await db.commit()
+    return {"status": "ok", "is_active": obj.is_active}
+
+
+class DryRunIn(BaseModel):
+    conditions: dict
+    simulated_ctx: dict
+
+
+@router.post("/orgs/{org_id}/event-rules/dry-run")
+async def dry_run_event_rule(
+    org_id: str,
+    body: DryRunIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """干跑: 把 conditions + 一个手工编辑的 ctx 喂进 RuleEngine.match_rule, 立刻知道是否命中。"""
+    assert_same_org(user, org_id)
+    matched = RuleEngine.match_rule(body.conditions, body.simulated_ctx)
+    return {"matched": matched}
+
+
+@router.get("/event-rules/metadata")
+async def event_rules_metadata(_: User = Depends(get_current_user)):
+    """前端节点画布的下拉框元数据。"""
+    return RuleEngine.metadata_for_frontend()
+
+
+# =============================================================
+# 12. 员工通知 Inbox
+# =============================================================
+class NotificationOut(BaseModel):
+    id: int
+    org_id: str
+    group_id: Optional[str] = None
+    target_employee_id: Optional[str] = None
+    session_id: Optional[str] = None
+    rule_id: Optional[str] = None
+    level: str
+    title: str
+    body: Optional[str] = None
+    is_read: bool
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/me/notifications", response_model=List[NotificationOut])
+async def my_notifications(
+    unread_only: bool = Query(False),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if not user.org_id:
+        return []
+    stmt = select(AgentNotification).where(AgentNotification.org_id == user.org_id)
+    # 定向到我 or 同组广播
+    eid_filter = []
+    if user.employee_id:
+        eid_filter.append(AgentNotification.target_employee_id == user.employee_id)
+    eid_filter.append(AgentNotification.target_employee_id.is_(None))
+    if user.group_id:
+        from sqlalchemy import or_
+        stmt = stmt.where(or_(*eid_filter)).where(
+            (AgentNotification.group_id == user.group_id) | (AgentNotification.group_id.is_(None))
+        )
+    if unread_only:
+        stmt = stmt.where(AgentNotification.is_read.is_(False))
+    stmt = stmt.order_by(desc(AgentNotification.created_at)).limit(limit)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+@router.post("/notifications/{nid}/read")
+async def mark_notification_read(
+    nid: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    res = await db.execute(select(AgentNotification).where(AgentNotification.id == nid))
+    obj = res.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, "通知不存在")
+    if obj.org_id != user.org_id and user.role != "platform_admin":
+        raise HTTPException(403, "禁止操作其他公司通知")
+    obj.is_read = True
+    await db.commit()
+    return {"status": "ok"}
+
+
+# =============================================================
+# 13. 规则触发审计 (后台复盘)
+# =============================================================
+class RuleFireOut(BaseModel):
+    id: int
+    session_id: str
+    rule_id: str
+    fired_at: Optional[datetime] = None
+    fired_at_stage: Optional[str] = None
+    fired_at_total_turn: Optional[int] = None
+    fired_at_stage_turn: Optional[int] = None
+    actions_executed: Optional[Any] = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/sessions/{sid}/rule-fires", response_model=List[RuleFireOut])
+async def session_rule_fires(
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    await _load_session_or_403(sid, db, user)
+    res = await db.execute(
+        select(SessionRuleFire)
+        .where(SessionRuleFire.session_id == sid)
+        .order_by(desc(SessionRuleFire.fired_at))
+    )
+    return res.scalars().all()

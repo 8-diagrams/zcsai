@@ -153,6 +153,8 @@ class Message(Base):
             comment="访客最近一次被识别到的情绪",
         )
     llm_decision_raw = Column(JSON, nullable=True, comment="仅 sender_type=employee 时有值: LLM 当轮完整返回")
+    # === P2 新增: 该消息由哪条规则触发(NULL = LLM/人工/系统兜底所发) ===
+    fired_by_rule_id = Column(String(50), nullable=True, index=True, comment="规则触发本条消息的 rule_id")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -213,3 +215,84 @@ class ActivityKBMount(Base):
     # 挂载属性
     priority = Column(Integer, default=0, comment="挂载权重(数值越大越优先)")
     mount_guideline = Column(Text, nullable=True, comment="当该活动挂载此库时特有的AI提示词")
+
+
+# ========================================================
+# P2: 规则引擎相关表
+# ========================================================
+class ActivityEventRule(Base):
+    """事件规则:运营人员可在前端节点画布配置,后端在 LLM 前/后评估并触发动作。"""
+    __tablename__ = "activity_event_rules"
+
+    id = Column(String(50), primary_key=True)
+    org_id = Column(String(50), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    # NULL = 该 org 下所有 activity 共用; 否则只对指定 activity 生效
+    activity_id = Column(String(50), ForeignKey("activities.id", ondelete="CASCADE"), nullable=True)
+    name = Column(String(100), nullable=False)
+    # 大 = 先评估; short_circuit 决定命中后是否短路
+    priority = Column(Integer, default=0, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    # pre_llm: LLM 调用前评估(转人工拦截/关键词阻断)
+    # post_llm: LLM 调用后评估(发素材/支付链接/webhook 等增强类)
+    phase = Column(
+        SQLEnum("pre_llm", "post_llm"),
+        default="post_llm",
+        nullable=False,
+    )
+    # DSL: {"all": [{field,op,value}, ...], "any": [...]}
+    conditions = Column(JSON, nullable=False)
+    # 有序 action 数组, 见 RuleEngine.py 支持的 action.type
+    actions = Column(JSON, nullable=False)
+    # once_per_session | once_per_stage | every_n_turns:N | always
+    fire_policy = Column(String(30), default="once_per_session", nullable=False)
+    short_circuit = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SessionRuleFire(Base):
+    """规则触发审计:防"复读机"(once_per_session/once_per_stage 查询源) + 后台复盘"""
+    __tablename__ = "session_rule_fires"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(50), index=True, nullable=False)
+    rule_id = Column(String(50), index=True, nullable=False)
+    fired_at = Column(DateTime, default=datetime.utcnow)
+    fired_at_stage = Column(String(50), nullable=True)
+    fired_at_total_turn = Column(Integer, nullable=True)
+    fired_at_stage_turn = Column(Integer, nullable=True)
+    # 实际执行了哪些 action + 各 action 的结果(成功/失败/原因)
+    actions_executed = Column(JSON, nullable=True)
+
+
+class AgentNotification(Base):
+    """员工通知 inbox:转人工邀请、系统提醒等"""
+    __tablename__ = "agent_notifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String(50), nullable=False)
+    group_id = Column(String(50), nullable=True)
+    # NULL = 整组广播; 否则定向到指定员工
+    target_employee_id = Column(String(50), nullable=True)
+    session_id = Column(String(50), nullable=True)
+    rule_id = Column(String(50), nullable=True)
+    level = Column(SQLEnum("info", "warning", "urgent"), default="info")
+    title = Column(String(200), nullable=False)
+    body = Column(Text, nullable=True)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WebhookDeadLetter(Base):
+    """规则派发 webhook 失败后的死信留底,供后台手工/定时重试"""
+    __tablename__ = "webhook_dead_letters"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(50), nullable=True)
+    rule_id = Column(String(50), nullable=True)
+    url = Column(String(500), nullable=False)
+    method = Column(String(10), nullable=False)
+    payload = Column(JSON, nullable=True)
+    last_error = Column(Text, nullable=True)
+    attempts = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)

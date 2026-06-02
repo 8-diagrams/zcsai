@@ -15,6 +15,20 @@ const sending = ref(false)
 const input = ref('')
 const errorMsg = ref('')
 const scrollerRef = ref(null)
+const stagesCfg = ref({})
+let stagesLoadedFor = null
+
+const loadStages = async () => {
+  const aid = session.value?.activity_id
+  if (!aid || aid === stagesLoadedFor) return
+  if (!auth.orgId) return
+  try {
+    const acts = await api.get(`/api/orgs/${auth.orgId}/activities`)
+    const a = acts.find(x => x.id === aid)
+    stagesCfg.value = a?.stages_config || {}
+    stagesLoadedFor = aid
+  } catch { stagesCfg.value = {} }
+}
 
 const reload = async () => {
   loading.value = true
@@ -26,6 +40,7 @@ const reload = async () => {
       const all = await api.get('/api/me/sessions?status=closed')
       session.value = all.find(s => s.id === sid.value) || null
     }
+    await loadStages()
     messages.value = await api.get(`/api/sessions/${sid.value}/messages`)
     await nextTick()
     if (scrollerRef.value) scrollerRef.value.scrollTop = scrollerRef.value.scrollHeight
@@ -68,6 +83,19 @@ onUnmounted(() => timer && clearInterval(timer))
 
 const fmtTime = (t) => t ? new Date(t).toLocaleTimeString() : ''
 const statusColor = (s) => ({ active: 'success', closed: 'default', transferred: 'warning' }[s] || 'default')
+const EMOTION_META = {
+  calm:       { label: '平静', color: 'default' },
+  joy:        { label: '喜悦', color: 'success' },
+  excited:    { label: '兴奋', color: 'success' },
+  hesitation: { label: '犹豫', color: 'info' },
+  impatience: { label: '急躁', color: 'warning' },
+  anger:      { label: '愤怒', color: 'error' },
+}
+const emotionMeta = (e) => EMOTION_META[e] || null
+const stageLabel = (code) => {
+  if (!code) return ''
+  return stagesCfg.value?.[code]?.name || code
+}
 </script>
 
 <template>
@@ -115,8 +143,24 @@ const statusColor = (s) => ({ active: 'success', closed: 'default', transferred:
             background: m.sender_type === 'visitor' ? '#fff' : (m.sender_type === 'system' ? '#fff8e1' : '#dcedc8'),
             border: '1px solid rgba(0,0,0,0.08)'
           }">
-            <div class="text-caption text-medium-emphasis mb-1">
-              {{ m.sender_type }}{{ m.sender_id ? ' · ' + m.sender_id : '' }} · {{ fmtTime(m.created_at) }}
+            <div class="text-caption text-medium-emphasis mb-1 d-flex align-center flex-wrap" style="gap:6px">
+              <span>{{ m.sender_type }}{{ m.sender_id ? ' · ' + m.sender_id : '' }} · {{ fmtTime(m.created_at) }}</span>
+              <VChip
+                v-if="m.stage_at_send"
+                size="x-small"
+                variant="outlined"
+                color="info"
+              >
+                {{ stageLabel(m.stage_at_send) }}
+              </VChip>
+              <VChip
+                v-if="m.sender_type === 'visitor' && emotionMeta(m.emotion_at_send)"
+                size="x-small"
+                variant="tonal"
+                :color="emotionMeta(m.emotion_at_send).color"
+              >
+                {{ emotionMeta(m.emotion_at_send).label }}
+              </VChip>
             </div>
             <div style="white-space: pre-wrap">{{ m.content }}</div>
           </div>

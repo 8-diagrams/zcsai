@@ -58,6 +58,16 @@ export const routes = [
         component: () => import('@/pages/org/Sessions.vue'),
         meta: { roles: ['platform_admin', 'org_admin'] },
       },
+      {
+        path: 'org/event-rules',
+        component: () => import('@/pages/org/EventRules.vue'),
+        meta: { roles: ['platform_admin', 'org_admin', 'group_admin'] },
+      },
+      {
+        path: 'org/event-rules/edit/:id?',
+        component: () => import('@/pages/org/EventRuleEditor.vue'),
+        meta: { roles: ['platform_admin', 'org_admin', 'group_admin'] },
+      },
 
       // 组管理员
       {

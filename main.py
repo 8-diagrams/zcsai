@@ -1,6 +1,6 @@
 import asyncio
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic_settings import BaseSettings, SettingsConfigDict
 #from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -81,7 +81,12 @@ from database import engine, Base, AsyncSessionLocal
 # 🚨 第 2 步：显式引入 models.py 里的所有表！
 # (极其关键：如果不在这里 import，SQLAlchemy 就不知道这些表的存在，启动时就不会自动建表，查询也会报错)
 # ---------------------------------------------------------
-from models import SessionRecord, Activity, Message, KnowledgeBase, ActivityKBMount, Employee, CustomerEmotion
+from models import (
+    SessionRecord, Activity, Message, KnowledgeBase, ActivityKBMount, Employee, CustomerEmotion,
+    ActivityEventRule, SessionRuleFire, AgentNotification, WebhookDeadLetter,
+)
+import RuleEngine
+from deps import decode_token
 
 # ==========================================
 # 3. 初始化 AI 客户端与 Mem0 记忆引擎
@@ -146,6 +151,39 @@ class ConnectionManager:
             await self.active_connections[conn_id].send_json(message)
 
 manager = ConnectionManager()
+
+
+# ==========================================
+# 4.5 员工 WebSocket 连接管理器
+# ==========================================
+# 同一个 employee_id 可能在多 tab 登录,对应多条 WebSocket。这里用 list 而不是覆盖式 dict[str, WS]。
+class AgentConnectionManager:
+    """转人工通知 / 系统通知的实时推送通道。单向 push, 不接收业务消息。"""
+    def __init__(self):
+        self.conns: dict[str, list[WebSocket]] = {}
+
+    async def connect(self, ws: WebSocket, employee_id: str):
+        await ws.accept()
+        self.conns.setdefault(employee_id, []).append(ws)
+        if settings.DEBUG_MODE: print(f"[🔗 Agent WS Connected] employee={employee_id}")
+
+    def disconnect(self, ws: WebSocket, employee_id: str):
+        if employee_id in self.conns:
+            self.conns[employee_id] = [w for w in self.conns[employee_id] if w is not ws]
+            if not self.conns[employee_id]:
+                del self.conns[employee_id]
+            if settings.DEBUG_MODE: print(f"[❌ Agent WS Disconnected] employee={employee_id}")
+
+    async def push(self, employee_id: str, message: dict):
+        for ws in list(self.conns.get(employee_id, [])):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                # 推不动就当 tab 已关; 留给 disconnect 清理
+                pass
+
+
+agent_manager = AgentConnectionManager()
 
 # ==========================================
 # 5. 核心：大模型推理与记忆处理 (后台任务)
@@ -276,6 +314,40 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                     log.warning(f"Session {session_id} ⚠️ takeover 下 Mem0 写入失败: {e}")
                 return
 
+            # A.7 Pre-LLM 规则评估: 主要用于「转人工拦截 / 关键词阻断 / block_llm」
+            # 注意上下文还没有 LLM 输出 (emotion/tags 来自 sess 当前快照), 所以这里只评估静态条件。
+            try:
+                pre_rules = await RuleEngine.load_active_rules(
+                    db, org_id=sess.org_id, activity_id=sess.activity_id, phase="pre_llm",
+                )
+                if pre_rules:
+                    pre_ctx = RuleEngine.build_context_pre_llm(
+                        cur_stage=sess.current_stage,
+                        cur_emotion=sess.current_emotion,
+                        total_turn=sess.total_turn_count,
+                        stage_turn=sess.stage_turn_count,
+                    )
+                    matched_pre = await RuleEngine.evaluate(
+                        pre_rules, pre_ctx, db,
+                        session_id=session_id,
+                        current_stage=sess.current_stage,
+                        current_total_turn=sess.total_turn_count,
+                    )
+                    if matched_pre:
+                        pre_result = await RuleEngine.dispatch_many(
+                            matched_pre, pre_ctx,
+                            db=db, sess=sess,
+                            visitor_conn_id=connection_id,
+                            visitor_manager=manager,
+                            agent_manager=agent_manager,
+                            log=log,
+                        )
+                        if pre_result.transfer_to_human or pre_result.blocked_llm:
+                            log.warning(f"Session {session_id} 🛑 Pre-LLM 规则命中, 跳过 LLM 调用 (transfer={pre_result.transfer_to_human}, blocked={pre_result.blocked_llm})")
+                            return
+            except Exception as e:
+                log.exception(f"Session {session_id} Pre-LLM 规则评估异常: {e}")
+
             # B. 查找 Activity
             t0 = time.perf_counter()
             log.debug(f"Session {session_id} 当前 Session 绑定 Activity ID: {sess.activity_id}")
@@ -379,6 +451,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
 
             # 4. 核心：原子更新 stage / emotion / 回合数。
             #    用 SQL 表达式 (col = col + 1) 防止 visitor 并发连发时的读改写竞态。
+            prev_emotion_value = sess.current_emotion  # 必须在 refresh 前抓: 用于规则的 emotion_degraded 判定
             stage_flipped = judged_next_stage != current_stage_key
             if stage_flipped:
                 log.warning(f"🔄 客户触发 SOP 流转: 【{current_stage_key}】 ➡️ 【{judged_next_stage}】 (stage_turn 重置为 1)")
@@ -401,7 +474,45 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             # 把内存里的 ORM 对象与 DB 重新对齐 (后续 employee Message insert 要用 sess.current_stage / current_emotion)
             await db.refresh(sess)
             log.debug(f"Session {session_id} 状态已更新: stage={sess.current_stage}, emotion={sess.current_emotion}, total_turn={sess.total_turn_count}, stage_turn={sess.stage_turn_count}")
-            
+
+            # 4.5 Post-LLM 规则评估: 发送支付链接 / 图片 / webhook / 转人工 等增强类
+            try:
+                post_rules = await RuleEngine.load_active_rules(
+                    db, org_id=sess.org_id, activity_id=sess.activity_id, phase="post_llm",
+                )
+                if post_rules:
+                    post_ctx = RuleEngine.build_context_post_llm(
+                        prev_stage=current_stage_key,
+                        prev_emotion=prev_emotion_value,
+                        new_total_turn=sess.total_turn_count,
+                        new_stage_turn=sess.stage_turn_count,
+                        llm_decision=ai_decision,
+                    )
+                    matched_post = await RuleEngine.evaluate(
+                        post_rules, post_ctx, db,
+                        session_id=session_id,
+                        current_stage=sess.current_stage,
+                        current_total_turn=sess.total_turn_count,
+                    )
+                    if matched_post:
+                        post_result = await RuleEngine.dispatch_many(
+                            matched_post, post_ctx,
+                            db=db, sess=sess,
+                            visitor_conn_id=connection_id,
+                            visitor_manager=manager,
+                            agent_manager=agent_manager,
+                            log=log,
+                        )
+                        # override_reply 覆盖即将发给访客的 AI 文本
+                        if post_result.override_reply is not None:
+                            log.warning(f"Session {session_id} 🔁 LLM 回复被规则覆盖")
+                            ai_reply_text = post_result.override_reply
+                        # 转人工后续访客消息会在 A.6 挡板被吃掉, 这里仍正常发完本轮 LLM 回复
+                        if post_result.transfer_to_human:
+                            log.warning(f"Session {session_id} 🤝 本轮已触发转人工(下一轮起 LLM 关闭)")
+            except Exception as e:
+                log.exception(f"Session {session_id} Post-LLM 规则评估异常: {e}")
+
             duration = asyncio.get_event_loop().time() - start_time
             log.success(f"✨ LLM 生成完毕 (耗时: {duration:.2f}s): {ai_reply_text[:30]}...")
 
@@ -538,6 +649,47 @@ async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid
     except Exception as e:
         logger.exception(f"💥 [WS Error] conn={connection_id} err={e}")
         manager.disconnect(connection_id)
+
+
+# ==========================================
+# 员工通知 WebSocket: /ws/agent/{employee_id}?token=<JWT>
+# 单向 push 通道, 用于转人工邀请 / 系统通知; 不接收业务消息
+# ==========================================
+@app.websocket("/ws/agent/{employee_id}")
+async def agent_websocket_endpoint(websocket: WebSocket, employee_id: str, token: str = Query(...)):
+    # 用 JWT 校验当前 token.sub 对应的 user 是否绑定了这个 employee_id
+    try:
+        payload = decode_token(token)
+        sub_user_id = payload.get("sub")
+        if not sub_user_id:
+            raise ValueError("token 缺 sub")
+    except Exception as e:
+        logger.warning(f"[Agent WS] token 校验失败 employee={employee_id}: {e}")
+        await websocket.close(code=4401)
+        return
+
+    # 校验绑定关系
+    async with AsyncSessionLocal() as db:
+        from models import User
+        ur = await db.execute(select(User).where(User.id == sub_user_id))
+        u = ur.scalar_one_or_none()
+        if not u or u.employee_id != employee_id:
+            logger.warning(f"[Agent WS] user {sub_user_id} 与 employee {employee_id} 不匹配, 拒绝")
+            await websocket.close(code=4403)
+            return
+
+    await agent_manager.connect(websocket, employee_id)
+    try:
+        while True:
+            # 单向 push, 但仍要 receive 保持连接活跃
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info(f"🔌 [Agent WS Disconnect] employee={employee_id}")
+        agent_manager.disconnect(websocket, employee_id)
+    except Exception as e:
+        logger.exception(f"💥 [Agent WS Error] employee={employee_id} err={e}")
+        agent_manager.disconnect(websocket, employee_id)
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,103 @@
+⏺ 系统里 stage 发生变化的唯一入口
+
+  main.py:444 
+
+  judged_next_stage = ai_decision.get("next_stage", current_stage_key)
+
+  只有 LLM 的 JSON 返回里的 next_stage 字段 才能改变 stage。换句话说 —— 每次访客发一条消息 → LLM 跑一次 → LLM 在它的回包里告诉系统"下一刻该去哪个 stage"。
+
+  这是系统里唯一会改 sessions.current_stage 列的地方（main.py:462-471 那条 UPDATE）。
+
+  ---
+  LLM 是怎么知道该跳哪个 stage 的
+  
+  UtilLLM.py:44 注入了一段 system_prompt：
+
+  "state_machine_context":
+      f"当前访客处于漏斗的【{current_stage}】阶段。
+       根据访客刚才的回复，如果你认为需要推进阶段，
+       你只能从以下允许的阶段中选择：{allowed_next_stages}。
+       如果你认为目前火候未到，请保持阶段为 {current_stage}。"
+
+  其中 allowed_next_stages 来自 activities.stages_config[current_stage].next_possible_stages —— 你在 database.sql 里给每个 stage 配的"出度白名单"。比如 database.sql:161-191 (database.sql#L161):
+
+  "stage_2_solution": {
+    "next_possible_stages": ["stage_3_objection", "stage_4_push", "stage_5_sleep"]
+  }
+
+  意思是"客户当前在方案期，LLM 只能选择保持 / 跳异议 / 跳逼单 / 跳沉睡"，绝对跳不到 stage_6_aftersales。
+
+  ---
+  三道防越权关卡
+  
+  LLM 是个统计模型，会瞎跳。所以系统有 3 层防御：
+
+  关卡 1：Prompt 约束（UtilLLM.py:44）
+  明确告诉 LLM "你只能从这几个里选"。
+
+  关卡 2：质检校验（UtilLLM.py:88-91）
+  judged_stage = ai_decision["next_stage"]
+  valid_stages = allowed_next_stages + [current_stage]  # 允许保持原 stage
+  if judged_stage not in valid_stages: 
+      raise ValueError(f"非法状态越权: 试图跳转到未授权的 {judged_stage}")
+  LLM 真敢跳到非法 stage → 抛错重试（最多 3 次）。
+
+  关卡 3：兜底（UtilLLM.py:115-122）
+  3 次都失败 → 返回 fallback：next_stage = current_stage（原地不动）+ 一句"抱歉系统走神了"。绝不会把会话扔到一个未授权的 stage。
+
+  ---
+  完整 stage 变化链路
+
+  访客发消息
+    │
+    ▼
+  process_ai_reply (main.py:191)
+    │
+    ▼
+  查 activities.stages_config[current_stage].next_possible_stages
+    │   → 拿到本 stage 的合法出度列表 (main.py:417)
+    │
+    ▼
+  generate_ai_reply_with_retry (UtilLLM.py)
+    │   ├─ system_prompt 告诉 LLM "你只能选 [next_possible_stages]"
+    │   ├─ 调 OpenAI 拿 JSON
+    │   └─ 校验 next_stage ∈ allowed → 否则重试
+    │
+    ▼
+  解析 ai_decision["next_stage"]    (main.py:444)
+    │
+    ▼
+  判断: judged_next_stage != current_stage_key ?  (main.py:454)
+    ├─ yes → log "🔄 客户触发 SOP 流转"
+    │        stage_turn_count = 1  (重置)
+    │
+    └─ no  → stage_turn_count = stage_turn_count + 1  (累加)
+    │
+    ▼
+  UPDATE sessions
+     SET current_stage = ?,
+         current_emotion = ?,
+         total_turn_count = total_turn_count + 1,
+         stage_turn_count = ?           (main.py:462)
+    │
+    ▼
+  db.refresh(sess)  →  sess.current_stage 已是新值
+    │
+    ▼
+  Post-LLM 规则评估 用 [prev_stage, new_stage] 衍生
+     stage_flipped / stage_flipped_to 等字段供规则匹配
+
+  ---
+  哪些环节不能改 stage
+
+  - ❌ 真人接管时：is_human_takeover=True 的 session 在 main.py:305-315 直接 return，LLM 都不调，stage 自然不变。员工手动 /agent-reply 发消息也不改 stage（router_admin.py 里没 UPDATE current_stage）。
+  - ❌ Pre-LLM 拦截规则：触发 transfer_to_human / block_llm 就 return 了，LLM 没跑，stage 不动。
+  - ❌ Post-LLM 规则的 actions：规则只能发素材 / 发 webhook / 拉人接管，没有"改 stage"这个 action。Stage 是 LLM 的专属决策权。
+  - ❌ 没有任何 REST API 允许直接 PATCH sessions.current_stage（你可以 grep 验证：router_admin.py 里改的是 is_human_takeover 等字段，没动 current_stage）。
+
+  ---
+  一句话总结
+
+  ▎ Stage 跃迁 = LLM 决策的副产物，且只在"LLM 没被任何前置规则拦截"时才发生。
+  ▎
+  ▎ 系统的设计哲学：**LLM 负责定性判断（"现在该往哪儿走"），Python 负责定量执行（计数、写库、规则匹配）。**Stage 是 LLM 的领地，规则引擎只能在 LLM 决策完之后"基于这个决策"做事，但不能反向篡改它。

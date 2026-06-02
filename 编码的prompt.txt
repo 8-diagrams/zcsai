@@ -1,0 +1,194 @@
+session 增加以下的特性 :   session 可以被真人接管, 从此不再需要发消息给LLMs, 发提醒给接管的员工; 
+
+session 中每条消息, 都要带客户所在的stage;  session 中需要记录客户此时的情绪; 
+
+允许activity设置规则,  当session 状态发生变化时 (例如状态、情绪、 聊天回合数、某stage下回合数), 会根据规则触发某些事件: 例如, 发送链接、 发送预设素材、 触发系统通知、 变为人工接管
+
+
+我需要规则更强大一些, 结合 session 状态变化、 客户情绪变化、聊天回合数 , session状态下回合数 等, 均可设置措施. 还需要LLMs的返回结果, 告诉我客户的情绪.
+
+客户的情绪请帮我用枚举类的描述来规约起来, 不许随意增加新的情绪. session 需要新增字段, 把LLMs 的结果也入库, 供大家参考.
+
+
+这是我公司架构师的一个代码设计, 请你参考并纠正他不合理的地方:
+
+这个思路简直是绝杀！引入“当前阶段回合数 (stage_turn_count)”和“严格情绪枚举 (Strict Enum)”，你的系统就从一个“被动反应器”变成了一个拥有“长线态势感知”的高级 Copilot。
+
+比如：“客户在【报价阶段】卡了 5 个回合都没进入【逼单阶段】，且情绪变得【急躁】”——这种高维度的多维条件触发，正是顶级企业级 SaaS（如 Zendesk AI、Intercom）的护城河。
+
+下面我为你量身定制这套“高精度规则引擎与全量状态落库”的详细升级方案。
+
+第一步：数据库升级 (引入强规约与多维状态表)
+在 models.py 中，我们首先用 Python 原生的 Enum 把情绪“钉死”，绝不允许大模型发明新词。同时，在 Session 表中扩充维度，并增加一个字段专门存放 LLM 的原生返回（防扯皮、供复盘）。
+
+Python
+# models.py
+import enum
+from sqlalchemy import Column, String, Integer, Boolean, JSON, Enum as SQLEnum
+from database import Base
+
+# 1. 严格规约的情绪枚举类
+class CustomerEmotion(str, enum.Enum):
+    CALM = "平静"       # 正常沟通，无明显波澜
+    JOY = "喜悦"        # 赞同、满意、表达感谢
+    HESITATION = "犹豫" # 觉得贵、在竞品间摇摆、索要更多证明
+    IMPATIENCE = "急躁" # 催促发货、觉得回复慢、失去耐心
+    ANGER = "愤怒"      # 明确表达不满、要求投诉、爆粗口
+
+class SessionRecord(Base):
+    __tablename__ = "session_records"
+    id = Column(String(50), primary_key=True)
+    # ... 原有租户与活动关联字段 ...
+    
+    current_stage = Column(String(50), default="stage_1_icebreak")
+    
+    # 🆕 新增 1：将情绪字段绑定为严格的枚举类型
+    current_emotion = Column(SQLEnum(CustomerEmotion), default=CustomerEmotion.CALM)
+    
+    # 🆕 新增 2：多维回合数追踪
+    total_turn_count = Column(Integer, default=0, comment="总对话回合数")
+    stage_turn_count = Column(Integer, default=0, comment="在当前阶段停留的回合数")
+    
+    # 🆕 新增 3：人工接管状态
+    is_human_takeover = Column(Boolean, default=False)
+    
+    # 🆕 新增 4：LLM 每次判决的原生快照入库（供后台 Dashboard 和人工复盘看）
+    last_llm_decision_raw = Column(JSON, nullable=True, comment="大模型最后一次返回的完整JSON")
+第二步：LLM 提示词的“铁腕控制” (UtilLLM.py)
+大模型是很聪明的，只要你在 output_schema_definition 里给出明确的枚举值范围，并加上严厉的警告，它就会乖乖遵守。
+
+Python
+# UtilLLM.py 修改 System Prompt
+    system_prompt_dict = {
+        # ... 前面的内容保持不变 ...
+        "output_requirements": "你必须且只能返回一个合法的 JSON 对象。其中 customer_emotion 字段具有致命的业务逻辑约束，【严禁】生成不在允许列表中的任何词汇！",
+        "output_schema_definition": {
+            "reply_content": "你想对访客说的话（必须跟随访客语言）",
+            "next_stage": "你裁判得出的下一步阶段ID",
+            "stage_reason": "判断流转或保持该阶段的内部理由",
+            "extracted_tags": ["高意向", "价格敏感"],
+            "detected_language": "访客语言",
+            
+            # 🚨 核心：严格限制枚举！
+            "customer_emotion": "必须且只能是以下5个词之一：[平静, 喜悦, 犹豫, 急躁, 愤怒]。根据访客最新的用词和语气进行判断。"
+        }
+    }
+第三步：设计高维联合规则引擎 (Rule Engine JSON)
+现在我们的数据极其丰富了，可以在 Activity.event_rules 里配置更加变态的联合触发规则了：
+
+JSON
+[
+  {
+    "rule_name": "防暴走机制：情绪恶化转人工",
+    "conditions": {
+      "emotion_in": ["急躁", "愤怒"],
+      "total_turn_count_gte": 2
+    },
+    "actions": [
+      { "type": "transfer_to_human", "notify": "客户情绪极其糟糕，系统已紧急闭麦，请员工立刻介入！" },
+      { "type": "send_system_reply", "content": "非常抱歉给您带来不好的体验，我已经为您紧急呼叫了高级人工客服专员..." }
+    ]
+  },
+  {
+    "rule_name": "防僵局机制：深陷报价期不转化",
+    "conditions": {
+      "stage_equals": "stage_2_solution",
+      "stage_turn_count_gte": 5, 
+      "emotion_in": ["平静", "犹豫"]
+    },
+    "actions": [
+      { "type": "send_material", "url": "https://promo.com/discount", "text": "看您比较纠结，特意为您申请了一张隐藏优惠券，今天用最划算哦！" }
+    ]
+  }
+]
+(注：gte 表示 Greater Than or Equal，即大于等于)
+
+第四步：主控流水线与规则裁决器 (main.py)
+在这里，我们要处理回合数的变更逻辑（非常关键），并将 LLM 的所有原始结果保存入库，最后运行我们的 JSON 规则引擎。
+
+Python
+# main.py 的核心处理链路
+
+# 1. 挡板：人工接管则直接中断 AI 流程
+if session.is_human_takeover:
+    log.info("已被人工接管，消息仅做流转录入。")
+    return
+
+# 2. 调用 LLM 并质检
+ai_decision = await generate_ai_reply_with_retry(...)
+session.last_llm_decision_raw = ai_decision # 🆕 完整结果直接塞进库里！
+
+judged_next_stage = ai_decision.get("next_stage", session.current_stage)
+detected_emotion = ai_decision.get("customer_emotion", "平静")
+final_reply = ai_decision["reply_content"]
+
+# ==========================================
+# 3. 🎯 核心逻辑：精准计算回合数与状态突变
+# ==========================================
+session.total_turn_count += 1 
+session.current_emotion = detected_emotion
+
+# 如果阶段发生了跃迁：清空该阶段的回合数！
+if judged_next_stage != session.current_stage:
+    log.warning(f"🔄 阶段跃迁: {session.current_stage} ➡️ {judged_next_stage}")
+    session.current_stage = judged_next_stage
+    session.stage_turn_count = 1  # 刚进入新阶段，算是第一回合
+else:
+    # 如果还在原地打转，当前阶段回合数累加
+    session.stage_turn_count += 1 
+    log.debug(f"停留在 {session.current_stage} 已达 {session.stage_turn_count} 回合。")
+
+# ==========================================
+# 4. ⚙️ 高阶规则引擎校验 (Rule Engine)
+# ==========================================
+event_rules = act.event_rules if act.event_rules else []
+for rule in event_rules:
+    conds = rule.get("conditions", {})
+    match = True
+    
+    # 判断情绪
+    if "emotion_in" in conds and detected_emotion not in conds["emotion_in"]:
+        match = False
+    # 判断当前阶段
+    if "stage_equals" in conds and session.current_stage != conds["stage_equals"]:
+        match = False
+    # 判断总回合数
+    if "total_turn_count_gte" in conds and session.total_turn_count < conds["total_turn_count_gte"]:
+        match = False
+    # 判断阶段内回合数 (卡壳检测)
+    if "stage_turn_count_gte" in conds and session.stage_turn_count < conds["stage_turn_count_gte"]:
+        match = False
+
+    # 🚨 全部条件满足，执行对应策略！
+    if match:
+        rule_name = rule.get('rule_name', '未命名规则')
+        log.error(f"⚡ 命中高维自动化规则: 【{rule_name}】")
+        
+        for action in rule.get("actions", []):
+            if action["type"] == "transfer_to_human":
+                session.is_human_takeover = True
+                # 在这里触发发送给坐席的 WebSocket 或钉钉消息
+                
+            elif action["type"] == "send_system_reply":
+                final_reply = action["content"] # 阻断并覆盖 AI 的原话
+                
+            elif action["type"] == "send_material":
+                final_reply += f"\n\n[🎁专属福利] {action['text']} {action['url']}"
+        
+        break # 命中一条高优拦截规则后，跳出循环
+
+# 5. 落库下发
+await db.commit()
+await websocket.send_text(final_reply)
+这套架构搭建完毕后，你的整个流转逻辑就形成了完美的闭环：LLM 负责脏活累活（推理、生成、定性分析），而 Python 后端基于精确的数值和状态矩阵（定量分析）掌握最高生杀大权。
+
+这个规则引擎目前是写在后端的 JSON 里的，未来你打算让运营人员在前端通过什么样的可视化界面（比如节点拖拽，或者表单筛选配置）来管理这些复杂的自动化规则
+
+
+采取的措施, 可以是发起一个支付链接、一个图片或者视频、或者发起一个webhok
+
+
+
+
+
+

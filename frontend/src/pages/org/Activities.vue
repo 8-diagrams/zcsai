@@ -1,8 +1,10 @@
 <script setup>
+import { useRouter } from 'vue-router'
 import CrudTable from '@/components/CrudTable.vue'
 import { api, ApiError } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
 
+const router = useRouter()
 const auth = useAuthStore()
 const orgId = ref(auth.orgId)
 const orgOptions = ref([])
@@ -120,6 +122,17 @@ const beforeSave = (body) => {
       <VCardText class="d-flex align-center" style="gap:12px">
         <span class="text-body-2">公司:</span>
         <VSelect v-model="orgId" :items="orgOptions" density="compact" hide-details style="max-width: 360px" />
+        <VSpacer />
+        <VBtn variant="tonal" prepend-icon="ri-flow-chart" @click="router.push('/org/event-rules')">
+          管理事件规则
+        </VBtn>
+      </VCardText>
+    </VCard>
+    <VCard v-else class="mb-4">
+      <VCardText class="d-flex align-center justify-end">
+        <VBtn variant="tonal" prepend-icon="ri-flow-chart" @click="router.push('/org/event-rules')">
+          管理事件规则
+        </VBtn>
       </VCardText>
     </VCard>
 
