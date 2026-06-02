@@ -65,6 +65,71 @@ const edges = ref([])
 const newId = () => `n_${Math.random().toString(36).slice(2, 9)}`
 
 const TRIGGER_ID = 'trigger'
+const GATE_ID    = 'gate_and'  // 固定 ID 的 AND 汇聚节点
+
+// 重新计算所有边: trigger → c1 → c2 → ... → cN → AND → 各 action
+// 改任何节点 (新增/删除/反序列化) 后都调用此函数, 保证图始终反映 all 语义
+function relayoutEdges() {
+  const conds   = nodes.value.filter(n => n.data.kind === 'condition')
+  const actions = nodes.value.filter(n => n.data.kind === 'action')
+  const newEdges = []
+
+  // condition 串联链 (AND): 第一条 trigger→c1 不带 AND 标签 (前面没东西可 AND)
+  let prev = TRIGGER_ID
+  conds.forEach((c, i) => {
+    const e = {
+      id: `e_${prev}_${c.id}`, source: prev, target: c.id,
+      style: { stroke: '#666' },
+      markerEnd: MarkerType.ArrowClosed,
+    }
+    if (i > 0) {
+      e.label = 'AND'
+      e.labelBgPadding = [4, 2]
+      e.labelStyle = { fontSize: 10, fill: '#555' }
+    }
+    newEdges.push(e)
+    prev = c.id
+  })
+
+  // gate 节点: 没有 condition 时 trigger 直连 actions; 有 condition 时 chain 末端 → gate
+  const gateAlive = actions.length > 0
+  if (gateAlive) {
+    // 确保 gate 节点在 nodes 中存在
+    if (!nodes.value.find(n => n.id === GATE_ID)) {
+      nodes.value.push({
+        id: GATE_ID, type: 'default',
+        position: { x: 540, y: 200 },
+        data: { kind: 'gate', label: 'AND\n全部满足才执行' },
+        deletable: false,
+        selectable: false,
+        style: {
+          background: '#FFE082', border: '2px solid #F9A825',
+          borderRadius: '50%', width: 80, height: 80,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 12, fontWeight: 600, whiteSpace: 'pre-line',
+        },
+      })
+    }
+    newEdges.push({
+      id: `e_${prev}_${GATE_ID}`, source: prev, target: GATE_ID,
+      style: { stroke: '#F9A825', strokeWidth: 2 },
+      markerEnd: MarkerType.ArrowClosed,
+    })
+    // gate → 每个 action
+    actions.forEach((a) => {
+      newEdges.push({
+        id: `e_${GATE_ID}_${a.id}`, source: GATE_ID, target: a.id,
+        style: { stroke: '#43A047', strokeWidth: 2 },
+        markerEnd: MarkerType.ArrowClosed,
+      })
+    })
+  } else {
+    // 没动作就移除 gate 节点
+    nodes.value = nodes.value.filter(n => n.id !== GATE_ID)
+  }
+
+  edges.value = newEdges
+}
 
 const initEmptyCanvas = () => {
   nodes.value = [
@@ -79,49 +144,72 @@ const addCondition = () => {
   const id = newId()
   const idx = nodes.value.filter(n => n.data.kind === 'condition').length
   nodes.value.push({
-    id, position: { x: 320, y: 80 + idx * 110 },
+    id, position: { x: 300, y: 80 + idx * 110 },
     data: { kind: 'condition', label: '条件',
       field: 'new_emotion', op: 'in', value: ['anger'] },
   })
-  // 与 trigger 连边
-  edges.value.push({ id: `e_${TRIGGER_ID}_${id}`, source: TRIGGER_ID, target: id,
-    markerEnd: MarkerType.ArrowClosed })
+  relayoutEdges()
 }
 
 const addAction = () => {
   const id = newId()
   const idx = nodes.value.filter(n => n.data.kind === 'action').length
   nodes.value.push({
-    id, position: { x: 640, y: 80 + idx * 110 },
+    id, position: { x: 780, y: 80 + idx * 110 },
     data: { kind: 'action', label: '动作', type: 'send_text', payload: { content: '' } },
   })
-  // 自动从最后一个条件(或 trigger)连过来
-  const lastCond = [...nodes.value].reverse().find(n => n.data.kind === 'condition')
-  const src = lastCond ? lastCond.id : TRIGGER_ID
-  edges.value.push({ id: `e_${src}_${id}`, source: src, target: id,
-    markerEnd: MarkerType.ArrowClosed })
+  relayoutEdges()
 }
 
 // ----- 选中节点 + 右侧抽屉 ---------------------------------------------
 const selectedId = ref(null)
+const drawerOpen = ref(false)
 const selectedNode = computed(() =>
   nodes.value.find(n => n.id === selectedId.value) || null)
 
-const onNodeClick = (e) => { selectedId.value = e.node.id }
+const onNodeClick = (e) => {
+  selectedId.value = e.node.id
+  drawerOpen.value = true
+}
 
 const removeSelected = () => {
-  if (!selectedId.value || selectedId.value === TRIGGER_ID) return
+  if (!selectedId.value || selectedId.value === TRIGGER_ID || selectedId.value === GATE_ID) return
   const id = selectedId.value
   nodes.value = nodes.value.filter(n => n.id !== id)
-  edges.value = edges.value.filter(e => e.source !== id && e.target !== id)
   selectedId.value = null
+  drawerOpen.value = false
+  relayoutEdges()
 }
 
 // ----- 序列化: 节点 → 后端 conditions/actions JSON ----------------------
+// 防线: 即便 UI 上 op/value 形状对不上 (例如老规则历史脏数据),
+// 也按 op 强行归一,保证写到后端的 conditions 一定合法。
+function coerceValueForOp(op, v) {
+  if (['in', 'not_in'].includes(op)) {
+    if (Array.isArray(v)) return v
+    if (v === undefined || v === null || v === '') return []
+    if (typeof v === 'string') return v.split(',').map(t => t.trim()).filter(Boolean)
+    return [v]
+  }
+  if (['eq', 'neq'].includes(op)) {
+    if (Array.isArray(v)) return v.length ? v[0] : ''
+    return v
+  }
+  if (['gte', 'gt', 'lte', 'lt'].includes(op)) {
+    const n = Number(Array.isArray(v) ? v[0] : v)
+    return Number.isFinite(n) ? n : 0
+  }
+  return v
+}
+
 function serialize() {
   const conds = nodes.value
     .filter(n => n.data.kind === 'condition')
-    .map(n => ({ field: n.data.field, op: n.data.op, value: n.data.value }))
+    .map(n => ({
+      field: n.data.field,
+      op: n.data.op,
+      value: coerceValueForOp(n.data.op, n.data.value),
+    }))
   const acts = nodes.value
     .filter(n => n.data.kind === 'action')
     .map(n => ({ type: n.data.type, ...(n.data.payload || {}) }))
@@ -138,25 +226,20 @@ function deserialize(rule) {
   all.forEach((c, i) => {
     const id = newId()
     nodes.value.push({
-      id, position: { x: 320, y: 80 + i * 110 },
+      id, position: { x: 300, y: 80 + i * 110 },
       data: { kind: 'condition', label: '条件',
         field: c.field, op: c.op, value: c.value },
     })
-    edges.value.push({ id: `e_${TRIGGER_ID}_${id}`, source: TRIGGER_ID, target: id,
-      markerEnd: MarkerType.ArrowClosed })
   })
-  const condIds = nodes.value.filter(n => n.data.kind === 'condition').map(n => n.id)
-  const lastSrc = condIds.length ? condIds[condIds.length - 1] : TRIGGER_ID
   ;(rule.actions || []).forEach((a, i) => {
     const id = newId()
     const { type, ...rest } = a
     nodes.value.push({
-      id, position: { x: 640, y: 80 + i * 110 },
+      id, position: { x: 780, y: 80 + i * 110 },
       data: { kind: 'action', label: '动作', type, payload: rest },
     })
-    edges.value.push({ id: `e_${lastSrc}_${id}`, source: lastSrc, target: id,
-      markerEnd: MarkerType.ArrowClosed })
   })
+  relayoutEdges()
 }
 
 // ----- 加载/保存/干跑 ---------------------------------------------------
@@ -198,7 +281,15 @@ const onDryRun = async () => {
   }
 }
 
+const onEscClose = (e) => {
+  if (e.key === 'Escape' && drawerOpen.value) drawerOpen.value = false
+}
+onBeforeUnmount(() => window.removeEventListener('keydown', onEscClose))
+
 onMounted(async () => {
+  // Esc 关闭抽屉 (因为 scrim=false, 没遮罩可点)
+  window.addEventListener('keydown', onEscClose)
+
   // platform_admin 没绑定固定 org, 需要先选 org 才能列 activity
   if (auth.isPlatformAdmin) {
     const orgs = await api.get('/api/organizations')
@@ -283,6 +374,68 @@ const valueAsString = computed({
     }
   },
 })
+
+/**
+ * 切换 op 时把 value 形状归一化:
+ *   in / not_in  → 数组
+ *   eq / neq     → 标量(若当前是数组, 取第一项)
+ *   gte/gt/lte/lt → 数字
+ *   其它          → 维持
+ * 修一个 bug: 之前从 in([anger]) 切到 eq, value 仍是 ['anger'] 列表,
+ * 序列化成 {"op":"eq","value":["anger"]} 在后端永不命中。
+ */
+function normalizeValueForOp(node, newOp) {
+  if (!node || !node.data) return
+  const v = node.data.value
+  if (['in', 'not_in'].includes(newOp)) {
+    if (!Array.isArray(v)) {
+      node.data.value = (v === undefined || v === null || v === '') ? [] : [v]
+    }
+  } else if (['eq', 'neq'].includes(newOp)) {
+    if (Array.isArray(v)) {
+      node.data.value = v.length ? v[0] : ''
+    }
+  } else if (['gte', 'gt', 'lte', 'lt'].includes(newOp)) {
+    const n = Number(Array.isArray(v) ? v[0] : v)
+    node.data.value = Number.isFinite(n) ? n : 0
+  }
+}
+
+// 用 sig 记忆"当前 drawer 里那个节点的 (id, op, field)";
+// 只有 id 不变, 仅仅 op/field 在 UI 上被用户切了, 才做归一化/清空。
+// 不区分这两种场景就会出 bug: 比如打开节点 (从 null → node) 会触发 field/op 的 watch,
+// 把刚反序列化进来的合法 value 清成 ''。
+const lastSig = ref({ id: null, op: null, field: null })
+
+watch(selectedNode, (node) => {
+  // 切节点 (或关闭 drawer): 只更新 sig, 不动任何 value
+  lastSig.value = node
+    ? { id: node.id, op: node.data.op, field: node.data.field }
+    : { id: null, op: null, field: null }
+}, { immediate: true })
+
+watch(() => selectedNode.value && selectedNode.value.data.op, (newOp) => {
+  const node = selectedNode.value
+  if (!node || !newOp) return
+  // 同一节点内 op 才发生变化 → 归一 value
+  if (lastSig.value.id === node.id && lastSig.value.op !== newOp) {
+    normalizeValueForOp(node, newOp)
+  }
+  lastSig.value = { ...lastSig.value, id: node.id, op: newOp }
+})
+
+watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
+  const node = selectedNode.value
+  if (!node || !newField) return
+  // 同一节点内 field 才被用户切 → 按当前 op 给一个空值
+  if (lastSig.value.id === node.id && lastSig.value.field !== newField) {
+    const op = node.data.op
+    if (['gte', 'gt', 'lte', 'lt'].includes(op)) node.data.value = 0
+    else if (['in', 'not_in'].includes(op))     node.data.value = []
+    else                                         node.data.value = ''
+  }
+  lastSig.value = { ...lastSig.value, id: node.id, field: newField }
+})
 </script>
 
 <template>
@@ -340,7 +493,7 @@ const valueAsString = computed({
         <VBtn size="small" color="primary" prepend-icon="ri-save-line" @click="onSave">保存</VBtn>
       </VCardText>
 
-      <div style="height: 520px; border-top: 1px solid #eee">
+      <div class="vue-flow-host">
         <VueFlow v-model:nodes="nodes" v-model:edges="edges" @node-click="onNodeClick" fit-view-on-init>
           <Background pattern-color="#bbb" :gap="16" />
           <Controls />
@@ -349,48 +502,67 @@ const valueAsString = computed({
     </VCard>
 
     <!-- 选中节点的属性侧抽屉 -->
-    <VNavigationDrawer v-model="selectedId" location="right" temporary width="380" :model-value="!!selectedId" @update:model-value="v => !v && (selectedId = null)">
-      <div v-if="selectedNode" class="pa-4">
-        <h3 class="text-h6 mb-2">{{ selectedNode.data.label }}</h3>
-        <small class="text-medium-emphasis">{{ selectedNode.id }}</small>
+    <VNavigationDrawer
+      v-model="drawerOpen"
+      location="right"
+      temporary
+      width="380"
+      :scrim="false"
+    >
+      <div v-if="selectedNode" class="pa-4 drawer-body">
+        <div class="d-flex align-center mb-2">
+          <h3 class="text-h6 me-auto">{{ selectedNode.data.label }}</h3>
+          <VBtn icon="ri-close-line" size="small" variant="text" @click="drawerOpen = false" />
+        </div>
+        <div class="text-caption text-medium-emphasis mb-3">{{ selectedNode.id }}</div>
 
         <!-- Condition -->
         <template v-if="selectedNode.data.kind === 'condition'">
-          <VSelect v-model="selectedNode.data.field" :items="meta.fields" label="字段" density="compact" class="mt-3" />
-          <VSelect v-model="selectedNode.data.op" :items="meta.ops" label="操作符" density="compact" />
+          <div class="field-label">字段</div>
+          <VSelect v-model="selectedNode.data.field" :items="meta.fields" variant="outlined" density="compact" hide-details class="mb-3" />
+
+          <div class="field-label">操作符</div>
+          <VSelect v-model="selectedNode.data.op" :items="meta.ops" variant="outlined" density="compact" hide-details class="mb-3" />
+
           <template v-if="selectedNode.data.field === 'new_emotion' || selectedNode.data.field === 'prev_emotion'">
+            <div class="field-label">值</div>
             <VSelect
               v-if="['in','not_in'].includes(selectedNode.data.op)"
               v-model="selectedNode.data.value"
-              :items="meta.emotions" label="值(多选)"
-              multiple chips density="compact"
+              :items="meta.emotions"
+              multiple chips
+              variant="outlined" density="compact" hide-details
             />
             <VSelect
               v-else
               v-model="selectedNode.data.value"
-              :items="meta.emotions" label="值"
-              density="compact"
+              :items="meta.emotions"
+              variant="outlined" density="compact" hide-details
             />
           </template>
-          <VTextField
-            v-else
-            v-model="valueAsString"
-            label="值 (in/not_in 用逗号分隔; 数值类直接填; 布尔填 true/false)"
-            density="compact"
-          />
+          <template v-else>
+            <div class="field-label">值 (in/not_in 用逗号分隔; 数值类直接填; 布尔填 true/false)</div>
+            <VTextField
+              v-model="valueAsString"
+              variant="outlined" density="compact" hide-details
+            />
+          </template>
         </template>
 
         <!-- Action -->
         <template v-if="selectedNode.data.kind === 'action'">
-          <VSelect v-model="selectedNode.data.type" :items="meta.action_types" label="动作类型" density="compact" class="mt-3" />
-          <div v-for="f in (actionFieldsByType[selectedNode.data.type] || [])" :key="f.key" class="mt-2">
+          <div class="field-label">动作类型</div>
+          <VSelect v-model="selectedNode.data.type" :items="meta.action_types" variant="outlined" density="compact" hide-details class="mb-3" />
+
+          <div v-for="f in (actionFieldsByType[selectedNode.data.type] || [])" :key="f.key" class="mb-3">
+            <div class="field-label">{{ f.label }}</div>
             <VTextarea v-if="f.type === 'textarea'"
-              v-model="selectedNode.data.payload[f.key]" :label="f.label" rows="3" auto-grow density="compact" />
+              v-model="selectedNode.data.payload[f.key]" rows="3" auto-grow
+              variant="outlined" density="compact" hide-details />
             <VTextField v-else
               v-model="selectedNode.data.payload[f.key]"
-              :label="f.label"
               :type="f.type === 'number' ? 'number' : 'text'"
-              density="compact" />
+              variant="outlined" density="compact" hide-details />
           </div>
         </template>
       </div>
@@ -415,3 +587,36 @@ const valueAsString = computed({
     </VDialog>
   </div>
 </template>
+
+<style scoped>
+/* Vue Flow 必须有 position:relative 才能正确定位节点 (它内部用 transform);
+   再开 overflow:hidden 防止画布溢出影响外层文字布局; */
+.vue-flow-host {
+  position: relative;
+  height: 560px;
+  overflow: hidden;
+  border-top: 1px solid #eee;
+}
+
+/* Vuetify 全局 line-height/letter-spacing 会让 Vue Flow 节点内的小字"挤"在一起。
+   在节点容器里恢复默认。 */
+.vue-flow-host :deep(.vue-flow__node) {
+  line-height: 1.4;
+  letter-spacing: normal;
+  font-family: inherit;
+}
+.vue-flow-host :deep(.vue-flow__node-default),
+.vue-flow-host :deep(.vue-flow__node-input),
+.vue-flow-host :deep(.vue-flow__node-output) {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+/* drawer 内字段排版: 用顶部小标签 + outlined 输入框替代 floating label,
+   一来视觉干净, 二来 compact density 下垂直空间足够。 */
+.drawer-body .field-label {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  margin-bottom: 4px;
+}
+</style>

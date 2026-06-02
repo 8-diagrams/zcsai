@@ -647,21 +647,120 @@ async def _fire_webhook(
 # =============================================================================
 # 5. metadata: 供前端下拉用
 # =============================================================================
-def metadata_for_frontend() -> dict:
-    """供 GET /api/event-rules/metadata 返回, 让前端节点画布拿到合法字段/op/动作列表。"""
+# 字段 / 操作符 / 动作类型的人话描述。前端 UI 用 label_zh 显示, 选中存 value (即 raw key)。
+# 加新字段时同时在这三张表里加 label,不然前端下拉会显示空白。
+
+_FIELD_LABELS = {
+    "new_emotion":       {"zh": "本轮客户情绪",        "en": "Current emotion",     "hint": "LLM 对本轮客户消息判定的情绪"},
+    "prev_emotion":      {"zh": "上一轮客户情绪",      "en": "Previous emotion",    "hint": "本轮 LLM 跑之前 session 上记录的情绪"},
+    "new_stage":         {"zh": "本轮 SOP 阶段",       "en": "Current stage",       "hint": "LLM 判定后客户进入/停留的阶段"},
+    "prev_stage":        {"zh": "上一轮 SOP 阶段",     "en": "Previous stage",      "hint": "LLM 跑之前的 stage"},
+    "stage_flipped":     {"zh": "本轮是否跨阶段",      "en": "Stage flipped (bool)","hint": "true = 本轮发生了 stage 切换"},
+    "stage_flipped_to":  {"zh": "本轮跳到了哪个阶段",  "en": "Flipped to stage",    "hint": "瞬时事件: 仅在跨阶段的那一轮有值"},
+    "total_turn_count":  {"zh": "总对话回合数",        "en": "Total turns",         "hint": "整个 session 的访客消息条数"},
+    "stage_turn_count":  {"zh": "当前阶段回合数",      "en": "Current stage turns", "hint": "在当前 stage 停留了多少回合, 跨阶段会重置为 1"},
+    "extracted_tags":    {"zh": "LLM 提取的标签",      "en": "Extracted tags",      "hint": "如 [高意向, 在意价格]; 用 contains 判断"},
+    "emotion_degraded":  {"zh": "情绪是否恶化",        "en": "Emotion degraded",    "hint": "上一轮非负 → 本轮负向(犹豫/急躁/愤怒)"},
+    "detected_language": {"zh": "检测到的访客语言",    "en": "Detected language",   "hint": "zh-CN / en-US / ja / es ..."},
+}
+
+_OP_LABELS = {
+    "eq":            {"zh": "等于",     "en": "= (equals)"},
+    "neq":           {"zh": "不等于",   "en": "≠ (not equals)"},
+    "in":            {"zh": "在列表中", "en": "in [...]"},
+    "not_in":        {"zh": "不在列表", "en": "not in [...]"},
+    "gte":           {"zh": "≥ 大于等于","en": ">= "},
+    "gt":            {"zh": "> 大于",   "en": "> "},
+    "lte":           {"zh": "≤ 小于等于","en": "<= "},
+    "lt":            {"zh": "< 小于",   "en": "< "},
+    "contains":      {"zh": "包含",     "en": "contains"},
+    "not_contains":  {"zh": "不包含",   "en": "not contains"},
+}
+
+_EMOTION_LABELS = {
+    "calm":       {"zh": "平静",  "en": "calm"},
+    "joy":        {"zh": "喜悦",  "en": "joy"},
+    "excited":    {"zh": "兴奋",  "en": "excited"},
+    "hesitation": {"zh": "犹豫",  "en": "hesitation"},
+    "impatience": {"zh": "急躁",  "en": "impatience"},
+    "anger":      {"zh": "愤怒",  "en": "anger"},
+}
+
+_ACTION_LABELS = {
+    "send_text":         {"zh": "发送文本",       "en": "Send text"},
+    "send_link":         {"zh": "发送链接",       "en": "Send link"},
+    "send_image":        {"zh": "发送图片",       "en": "Send image"},
+    "send_video":        {"zh": "发送视频",       "en": "Send video"},
+    "send_payment_link": {"zh": "发送支付链接",   "en": "Send payment link"},
+    "send_material":     {"zh": "发送素材(暂未启用)","en": "Send material (TBD)"},
+    "transfer_to_human": {"zh": "转人工接管",     "en": "Transfer to human"},
+    "system_notify":     {"zh": "系统通知员工",   "en": "System notify"},
+    "webhook":           {"zh": "调用 Webhook",   "en": "Call webhook"},
+    "override_reply":    {"zh": "覆盖 LLM 回复",  "en": "Override LLM reply"},
+    "block_llm":         {"zh": "阻断 LLM 调用",  "en": "Block LLM"},
+    "set_tag":           {"zh": "打标签(暂未启用)","en": "Set tag (TBD)"},
+}
+
+_FIRE_POLICY_LABELS = {
+    "once_per_session": {"zh": "整个会话只触发一次", "en": "Once per session"},
+    "once_per_stage":   {"zh": "每个 stage 只触发一次","en": "Once per stage"},
+    "every_n_turns:3":  {"zh": "每 3 回合可再触发",  "en": "Every 3 turns"},
+    "every_n_turns:5":  {"zh": "每 5 回合可再触发",  "en": "Every 5 turns"},
+    "always":           {"zh": "每次满足都触发",    "en": "Always"},
+}
+
+_PHASE_LABELS = {
+    "pre_llm":  {"zh": "LLM 调用前 (拦截类)",     "en": "Before LLM (intercept)"},
+    "post_llm": {"zh": "LLM 调用后 (增强类)",     "en": "After LLM (enrich)"},
+}
+
+# 业务约定的 SOP stage 枚举(与 database.sql 中 stages_config 对齐)。
+# 注: 每个 activity 可以自定义自己的 stages, 这里给的是"全公司通用"的 6 个 SOP key。
+# 前端展示时按 activity 自己的 stages_config 覆盖也可以,但 90% 场景就是这 6 个。
+_STAGE_LABELS_GLOBAL = {
+    "stage_1_icebreak":   {"zh": "破冰与探需",       "en": "Icebreak"},
+    "stage_2_solution":   {"zh": "方案与价值传递",   "en": "Solution"},
+    "stage_3_objection":  {"zh": "异议处理",         "en": "Objection handling"},
+    "stage_4_push":       {"zh": "逼单转化",         "en": "Push for close"},
+    "stage_5_sleep":      {"zh": "沉睡/沉默",        "en": "Sleep"},
+    "stage_6_aftersales": {"zh": "售后",             "en": "Aftersales"},
+}
+
+
+def _enriched(d: dict, value: str) -> dict:
+    """把 (value, {zh, en, hint?}) 合成前端要的 {value, label_zh, label_en, hint}。"""
+    info = d.get(value, {})
     return {
-        "fields": sorted(ALLOWED_FIELDS),
-        "ops": sorted(ALLOWED_OPS),
-        "emotions": ["calm", "joy", "excited", "hesitation", "impatience", "anger"],
-        "fire_policies": [
-            "once_per_session", "once_per_stage",
-            "every_n_turns:3", "every_n_turns:5", "always",
-        ],
-        "phases": ["pre_llm", "post_llm"],
-        "action_types": [
+        "value": value,
+        "label_zh": info.get("zh", value),
+        "label_en": info.get("en", value),
+        "hint": info.get("hint"),
+    }
+
+
+def metadata_for_frontend() -> dict:
+    """供 GET /api/event-rules/metadata 返回, 让前端节点画布拿到合法字段/op/动作列表。
+
+    每一项 = {value, label_zh, label_en, hint?}。前端下拉用 label_zh 显示, value 仍是 raw key。
+    """
+    return {
+        "fields": [_enriched(_FIELD_LABELS, f) for f in sorted(ALLOWED_FIELDS)],
+        "ops":    [_enriched(_OP_LABELS,    o) for o in sorted(ALLOWED_OPS)],
+        "emotions": [_enriched(_EMOTION_LABELS, e) for e in
+                     ["calm", "joy", "excited", "hesitation", "impatience", "anger"]],
+        "stages_global": [_enriched(_STAGE_LABELS_GLOBAL, s) for s in _STAGE_LABELS_GLOBAL.keys()],
+        "fire_policies": [_enriched(_FIRE_POLICY_LABELS, p) for p in
+                          ["once_per_session", "once_per_stage",
+                           "every_n_turns:3", "every_n_turns:5", "always"]],
+        "phases": [_enriched(_PHASE_LABELS, p) for p in ["pre_llm", "post_llm"]],
+        "action_types": [_enriched(_ACTION_LABELS, a) for a in [
             "send_text", "send_link", "send_image", "send_video",
             "send_payment_link", "send_material",
             "transfer_to_human", "system_notify", "webhook",
             "override_reply", "block_llm", "set_tag",
-        ],
+        ]],
+        # 用前端 v-if 判断"字段是否是 stage 类"
+        "stage_like_fields": ["new_stage", "prev_stage", "stage_flipped_to"],
+        "emotion_like_fields": ["new_emotion", "prev_emotion"],
+        "boolean_like_fields": ["stage_flipped", "emotion_degraded"],
     }
