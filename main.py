@@ -319,6 +319,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             try:
                 pre_rules = await RuleEngine.load_active_rules(
                     db, org_id=sess.org_id, activity_id=sess.activity_id, phase="pre_llm",
+                    log=log,
                 )
                 if pre_rules:
                     pre_ctx = RuleEngine.build_context_pre_llm(
@@ -332,6 +333,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                         session_id=session_id,
                         current_stage=sess.current_stage,
                         current_total_turn=sess.total_turn_count,
+                        phase="pre_llm", log=log,
                     )
                     if matched_pre:
                         pre_result = await RuleEngine.dispatch_many(
@@ -340,7 +342,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                             visitor_conn_id=connection_id,
                             visitor_manager=manager,
                             agent_manager=agent_manager,
-                            log=log,
+                            log=log, phase="pre_llm",
                         )
                         if pre_result.transfer_to_human or pre_result.blocked_llm:
                             log.warning(f"Session {session_id} 🛑 Pre-LLM 规则命中, 跳过 LLM 调用 (transfer={pre_result.transfer_to_human}, blocked={pre_result.blocked_llm})")
@@ -479,6 +481,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             try:
                 post_rules = await RuleEngine.load_active_rules(
                     db, org_id=sess.org_id, activity_id=sess.activity_id, phase="post_llm",
+                    log=log,
                 )
                 if post_rules:
                     post_ctx = RuleEngine.build_context_post_llm(
@@ -493,6 +496,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                         session_id=session_id,
                         current_stage=sess.current_stage,
                         current_total_turn=sess.total_turn_count,
+                        phase="post_llm", log=log,
                     )
                     if matched_post:
                         post_result = await RuleEngine.dispatch_many(
@@ -501,7 +505,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                             visitor_conn_id=connection_id,
                             visitor_manager=manager,
                             agent_manager=agent_manager,
-                            log=log,
+                            log=log, phase="post_llm",
                         )
                         # override_reply 覆盖即将发给访客的 AI 文本
                         if post_result.override_reply is not None:

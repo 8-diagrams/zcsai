@@ -142,6 +142,17 @@ def _match_one(cond: dict, ctx: dict) -> bool:
     return False
 
 
+def _explain_cond(cond: dict, ctx: dict) -> tuple[bool, str]:
+    """同 _match_one, 但额外返回一句"actual/expected"的诊断, 给日志用。"""
+    field = cond.get("field")
+    op = cond.get("op")
+    val = cond.get("value")
+    actual = ctx.get(field)
+    ok = _match_one(cond, ctx)
+    summary = f"{field} {op} {val!r}  (actual={actual!r})"
+    return ok, summary
+
+
 def match_rule(rule_conditions: dict, ctx: dict) -> bool:
     """
     rule_conditions = {"all": [...], "any": [...]}
@@ -166,6 +177,7 @@ def match_rule(rule_conditions: dict, ctx: dict) -> bool:
 # =============================================================================
 async def load_active_rules(
     db: AsyncSession, *, org_id: str, activity_id: Optional[str], phase: str,
+    log=None,
 ) -> list[ActivityEventRule]:
     """读取该 org + 该 activity(或全 org 共用)的启用规则,按 priority desc 排序。"""
     stmt = (
@@ -184,7 +196,12 @@ async def load_active_rules(
         stmt = stmt.where(ActivityEventRule.activity_id.is_(None))
     stmt = stmt.order_by(desc(ActivityEventRule.priority))
     res = await db.execute(stmt)
-    return list(res.scalars().all())
+    rules = list(res.scalars().all())
+    (log or logger).debug(
+        f"[RuleEngine/{phase}] load_active_rules org={org_id} activity={activity_id} "
+        f"-> {len(rules)} 条 (含全公司通用)"
+    )
+    return rules
 
 
 async def _can_fire_by_policy(
@@ -250,12 +267,66 @@ async def evaluate(
     session_id: str,
     current_stage: str,
     current_total_turn: int,
+    phase: str = "unknown",
+    log=None,
 ) -> list[ActivityEventRule]:
-    """返回本轮应触发的规则列表 (按 priority desc; short_circuit 命中后停)。"""
+    """返回本轮应触发的规则列表 (按 priority desc; short_circuit 命中后停)。
+
+    日志策略:
+      - INFO  评估总览 (规则数 + ctx 关键字段);  命中/未命中每条结论
+      - DEBUG 每条 condition 的 actual / expected
+      - WARNING short_circuit 提前截停, 或 fire_policy 拦截
+    """
+    log = log or logger
+    if not rules:
+        log.debug(f"[RuleEngine/{phase}] no rules to evaluate")
+        return []
+
+    ctx_brief = {k: ctx.get(k) for k in (
+        "new_stage", "new_emotion", "prev_emotion",
+        "stage_flipped", "stage_turn_count", "total_turn_count", "emotion_degraded",
+    )}
+    log.info(
+        f"[RuleEngine/{phase}] session={session_id} 评估 {len(rules)} 条规则 "
+        f"ctx={ctx_brief}"
+    )
+
     hits: list[ActivityEventRule] = []
     for rule in rules:
-        if not match_rule(rule.conditions or {}, ctx):
+        # 1. 条件匹配 (顺带打 DEBUG 细节)
+        cond_block = rule.conditions or {}
+        all_conds = cond_block.get("all") or []
+        any_conds = cond_block.get("any") or []
+        fail_reason = None
+
+        for c in all_conds:
+            ok, summary = _explain_cond(c, ctx)
+            log.debug(f"[RuleEngine/{phase}] rule={rule.id!r} ALL  cond {summary} -> {ok}")
+            if not ok:
+                fail_reason = f"ALL 失败: {summary}"
+                break
+        if fail_reason is None and any_conds:
+            any_ok = False
+            for c in any_conds:
+                ok, summary = _explain_cond(c, ctx)
+                log.debug(f"[RuleEngine/{phase}] rule={rule.id!r} ANY  cond {summary} -> {ok}")
+                if ok:
+                    any_ok = True
+                    break
+            if not any_ok:
+                fail_reason = "ANY 失败: 无任何 any 条件命中"
+        if fail_reason is None and not all_conds and not any_conds:
+            fail_reason = "空条件 (all/any 都为空)"
+
+        if fail_reason:
+            log.info(
+                f"[RuleEngine/{phase}] ✗ skip  rule={rule.id!r} ({rule.name!r})"
+                f"  policy={rule.fire_policy} priority={rule.priority}"
+                f"  reason=[{fail_reason}]"
+            )
             continue
+
+        # 2. fire_policy 检查
         if not await _can_fire_by_policy(
             db,
             session_id=session_id,
@@ -263,10 +334,29 @@ async def evaluate(
             current_stage=current_stage,
             current_total_turn=current_total_turn,
         ):
+            log.info(
+                f"[RuleEngine/{phase}] ✗ skip  rule={rule.id!r} ({rule.name!r})"
+                f"  reason=[fire_policy={rule.fire_policy} 不允许本轮再触发]"
+            )
             continue
+
+        # 3. 命中
+        log.info(
+            f"[RuleEngine/{phase}] ✓ HIT   rule={rule.id!r} ({rule.name!r})"
+            f"  priority={rule.priority} policy={rule.fire_policy}"
+            f"  actions={len(rule.actions or [])}"
+        )
         hits.append(rule)
         if rule.short_circuit:
+            log.warning(
+                f"[RuleEngine/{phase}] ⚡ short_circuit=True 截停, 跳过剩余 "
+                f"{sum(1 for r in rules if r.priority < rule.priority)} 条更低优先级规则"
+            )
             break
+
+    log.info(
+        f"[RuleEngine/{phase}] session={session_id} 评估完成: 命中 {len(hits)}/{len(rules)} 条"
+    )
     return hits
 
 
@@ -296,10 +386,22 @@ async def dispatch_many(
     visitor_manager,
     agent_manager,
     log,
+    phase: str = "unknown",
 ) -> DispatchResult:
     out = DispatchResult()
+    if not rules:
+        return out
+    log.info(
+        f"[RuleEngine/{phase}] dispatch 开始: session={sess.id} 命中 {len(rules)} 条 "
+        f"-> {[r.name for r in rules]}"
+    )
     for rule in rules:
         action_results: list[dict] = []
+        action_types = [a.get("type") for a in (rule.actions or [])]
+        log.info(
+            f"[RuleEngine/{phase}] ▶ 执行规则 [{rule.name!r}] (id={rule.id}) "
+            f"actions={action_types}"
+        )
         try:
             await _dispatch_one(
                 rule, ctx,
@@ -311,8 +413,16 @@ async def dispatch_many(
                 log=log,
             )
         except Exception as e:
-            log.exception(f"[RuleEngine] 规则 {rule.id} ({rule.name}) 执行异常: {e}")
+            log.exception(f"[RuleEngine/{phase}] 规则 {rule.id} ({rule.name}) 执行异常: {e}")
             action_results.append({"error": str(e)})
+
+        # 单条 rule 所有 action 的成功/失败汇总
+        ok_count = sum(1 for r in action_results if r.get("ok"))
+        fail_count = len(action_results) - ok_count
+        log.info(
+            f"[RuleEngine/{phase}] ◀ 规则 [{rule.name!r}] 执行完毕 "
+            f"actions ok={ok_count} fail={fail_count} details={action_results}"
+        )
 
         # 写一行审计
         try:
@@ -328,11 +438,18 @@ async def dispatch_many(
             )
             await db.commit()
             out.fired_rule_ids.append(rule.id)
-            log.info(f"[RuleEngine] ⚡ 命中规则 [{rule.name}] (id={rule.id}, policy={rule.fire_policy})")
         except Exception as e:
-            log.warning(f"[RuleEngine] 写审计 session_rule_fires 失败: {e}")
+            log.warning(f"[RuleEngine/{phase}] 写审计 session_rule_fires 失败 rule={rule.id}: {e}")
             await db.rollback()
 
+    # 整批结论 (transfer/override/block 等聚合 flag)
+    log.info(
+        f"[RuleEngine/{phase}] dispatch 结束: session={sess.id}"
+        f" fired={out.fired_rule_ids}"
+        f" blocked_llm={out.blocked_llm}"
+        f" override_reply={'YES' if out.override_reply is not None else 'no'}"
+        f" transfer_to_human={out.transfer_to_human}"
+    )
     return out
 
 
@@ -352,6 +469,7 @@ async def _dispatch_one(
     """串行执行单条规则的 action 列表。"""
     for action in (rule.actions or []):
         atype = action.get("type")
+        log.debug(f"[RuleEngine] action 开始: rule={rule.id} type={atype} payload_keys={list(action.keys())}")
         try:
             if atype == "send_text":
                 content = action.get("content", "")
