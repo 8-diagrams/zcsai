@@ -196,9 +196,18 @@ def test_rule_anti_meltdown_doesnt_fire_on_first_turn():
 # ---------------------------------------------------------------------------
 def test_metadata_lists_match_whitelist():
     md = metadata_for_frontend()
-    assert set(md["fields"]) == ALLOWED_FIELDS
-    assert set(md["ops"]) == ALLOWED_OPS
-    assert NEGATIVE_EMOTIONS.issubset(set(md["emotions"]))
+    # metadata 现在每项是 {value, label_zh, label_en, hint?},取 value 集合比对白名单
+    field_values   = {x["value"] for x in md["fields"]}
+    op_values      = {x["value"] for x in md["ops"]}
+    emotion_values = {x["value"] for x in md["emotions"]}
+    action_values  = {x["value"] for x in md["action_types"]}
+    assert field_values == ALLOWED_FIELDS
+    assert op_values == ALLOWED_OPS
+    assert NEGATIVE_EMOTIONS.issubset(emotion_values)
     # 核心动作必须存在
     for a in ("transfer_to_human", "webhook", "send_payment_link", "system_notify"):
-        assert a in md["action_types"]
+        assert a in action_values
+    # 新增的 stages_global 与字段类别提示
+    assert "stages_global" in md and len(md["stages_global"]) >= 6
+    assert "stage_like_fields" in md
+    assert "new_stage" in md["stage_like_fields"]

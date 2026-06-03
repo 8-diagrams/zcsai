@@ -70,6 +70,7 @@ async def generate_ai_reply_with_retry(
     for attempt in range(1, max_retries + 1):
         try:
             logger.debug(f"Session {session_id} LLM 🤖 正在发起第 {attempt}/{max_retries} 次 LLM 呼叫...")
+            logger.debug(f"Session {session_id} LLMs call {model_name}, [[{json.dumps(messages, indent=2)}]] ")
             response = await llm_client.chat.completions.create(
                 model=model_name,
                 messages=messages,

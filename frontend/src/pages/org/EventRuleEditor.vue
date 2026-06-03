@@ -26,11 +26,57 @@ const orgOptions = ref([])
 
 const ruleId = computed(() => route.params.id || null)
 
-// ----- 元数据 (字段/op/动作类型/情绪枚举) ------------------------------
+// ----- 元数据 (字段/op/动作类型/情绪/stage 枚举, 都带中英文 label) ------------
+// 每项形如 { value, label_zh, label_en, hint? }; v-select 用 itemTitle/itemValue 渲染
 const meta = ref({
   fields: [], ops: [], emotions: [], action_types: [],
-  fire_policies: ['once_per_session'], phases: ['pre_llm', 'post_llm'],
+  stages_global: [], fire_policies: [], phases: [],
+  stage_like_fields: [], emotion_like_fields: [], boolean_like_fields: [],
 })
+
+// 工具: 给 v-select 把 [{value, label_zh}] 包成 {title, value}; 也兼容老的字符串数组
+const toItems = (arr) => (arr || []).map(x =>
+  typeof x === 'string'
+    ? { title: x, value: x }
+    : { title: `${x.label_zh}  ·  ${x.value}`, value: x.value, hint: x.hint })
+
+// stage 类下拉用 activity 自己的 stages_config, 拿不到再回退全局 6 个 stage
+const stageOptions = computed(() => {
+  const local = currentActivityStages.value
+  if (local && local.length) return local
+  return toItems(meta.value.stages_global)
+})
+
+const currentActivityStages = ref([])    // [{title, value}] (取自 activity.stages_config)
+
+// 选中字段对应的提示, 显示在字段下拉下方
+const currentFieldHint = computed(() => {
+  if (!selectedNode.value || selectedNode.value.data.kind !== 'condition') return ''
+  const f = (meta.value.fields || []).find(x => x.value === selectedNode.value.data.field)
+  return f && f.hint ? f.hint : ''
+})
+
+// 加载某个 activity 的 stages_config 作为 stage 类下拉源 (优先级高于 stages_global)
+async function loadStagesForActivity(actId) {
+  if (!actId) { currentActivityStages.value = []; return }
+  try {
+    const all = await api.get(`/api/orgs/${orgId.value}/activities`)
+    const act = all.find(a => a.id === actId)
+    const cfg = act && act.stages_config
+    if (cfg && typeof cfg === 'object') {
+      currentActivityStages.value = Object.keys(cfg).map(k => {
+        const v = cfg[k]
+        const name = (v && typeof v === 'object' && v.name) ? v.name : k
+        return { title: `${name}  ·  ${k}`, value: k }
+      })
+    } else {
+      currentActivityStages.value = []
+    }
+  } catch {
+    currentActivityStages.value = []
+  }
+}
+// watch(activity_id) 在 ruleForm 声明之后再注册, 见下方 ruleForm 后面
 
 // ----- 表单层 (规则的非画布属性) ---------------------------------------
 const ruleForm = ref({
@@ -42,6 +88,9 @@ const ruleForm = ref({
   short_circuit: false,
   is_active: true,
 })
+
+// activity_id 切换 → 重新拉 stages_config 当 stage 类下拉源
+watch(() => ruleForm.value.activity_id, (v) => { loadStagesForActivity(v) })
 
 const activities = ref([])
 
@@ -463,13 +512,17 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
             />
           </VCol>
           <VCol cols="6" md="2">
-            <VSelect v-model="ruleForm.phase" :items="meta.phases" label="阶段" density="compact" />
+            <VSelect v-model="ruleForm.phase" :items="toItems(meta.phases)"
+                     item-title="title" item-value="value"
+                     label="阶段" density="compact" />
           </VCol>
           <VCol cols="6" md="1">
             <VTextField v-model.number="ruleForm.priority" label="优先级" type="number" density="compact" />
           </VCol>
           <VCol cols="6" md="2">
-            <VSelect v-model="ruleForm.fire_policy" :items="meta.fire_policies" label="触发频率" density="compact" />
+            <VSelect v-model="ruleForm.fire_policy" :items="toItems(meta.fire_policies)"
+                     item-title="title" item-value="value"
+                     label="触发频率" density="compact" />
           </VCol>
           <VCol cols="6" md="2">
             <VSwitch v-model="ruleForm.short_circuit" label="命中后短路" inset density="compact" hide-details />
@@ -519,29 +572,76 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
         <!-- Condition -->
         <template v-if="selectedNode.data.kind === 'condition'">
           <div class="field-label">字段</div>
-          <VSelect v-model="selectedNode.data.field" :items="meta.fields" variant="outlined" density="compact" hide-details class="mb-3" />
+          <VSelect v-model="selectedNode.data.field" :items="toItems(meta.fields)"
+                   item-title="title" item-value="value"
+                   variant="outlined" density="compact" hide-details class="mb-3" />
+          <div v-if="currentFieldHint" class="text-caption text-medium-emphasis mb-3">
+            {{ currentFieldHint }}
+          </div>
 
           <div class="field-label">操作符</div>
-          <VSelect v-model="selectedNode.data.op" :items="meta.ops" variant="outlined" density="compact" hide-details class="mb-3" />
+          <VSelect v-model="selectedNode.data.op" :items="toItems(meta.ops)"
+                   item-title="title" item-value="value"
+                   variant="outlined" density="compact" hide-details class="mb-3" />
 
-          <template v-if="selectedNode.data.field === 'new_emotion' || selectedNode.data.field === 'prev_emotion'">
+          <!-- 情绪类字段 -->
+          <template v-if="meta.emotion_like_fields.includes(selectedNode.data.field)">
             <div class="field-label">值</div>
             <VSelect
               v-if="['in','not_in'].includes(selectedNode.data.op)"
               v-model="selectedNode.data.value"
-              :items="meta.emotions"
+              :items="toItems(meta.emotions)"
+              item-title="title" item-value="value"
               multiple chips
               variant="outlined" density="compact" hide-details
             />
             <VSelect
               v-else
               v-model="selectedNode.data.value"
-              :items="meta.emotions"
+              :items="toItems(meta.emotions)"
+              item-title="title" item-value="value"
               variant="outlined" density="compact" hide-details
             />
           </template>
+
+          <!-- Stage 类字段: new_stage / prev_stage / stage_flipped_to -->
+          <template v-else-if="meta.stage_like_fields.includes(selectedNode.data.field)">
+            <div class="field-label">值 (SOP 阶段)</div>
+            <VSelect
+              v-if="['in','not_in'].includes(selectedNode.data.op)"
+              v-model="selectedNode.data.value"
+              :items="stageOptions"
+              item-title="title" item-value="value"
+              multiple chips
+              variant="outlined" density="compact" hide-details
+            />
+            <VSelect
+              v-else
+              v-model="selectedNode.data.value"
+              :items="stageOptions"
+              item-title="title" item-value="value"
+              variant="outlined" density="compact" hide-details
+            />
+          </template>
+
+          <!-- Boolean 类字段: stage_flipped / emotion_degraded -->
+          <template v-else-if="meta.boolean_like_fields.includes(selectedNode.data.field)">
+            <div class="field-label">值 (布尔)</div>
+            <VSelect
+              v-model="selectedNode.data.value"
+              :items="[{title:'是 (true)', value:true},{title:'否 (false)', value:false}]"
+              item-title="title" item-value="value"
+              variant="outlined" density="compact" hide-details
+            />
+          </template>
+
+          <!-- 数值类 / 字符串类: 自由输入 -->
           <template v-else>
-            <div class="field-label">值 (in/not_in 用逗号分隔; 数值类直接填; 布尔填 true/false)</div>
+            <div class="field-label">
+              值
+              <span v-if="['in','not_in'].includes(selectedNode.data.op)">(多个用逗号分隔)</span>
+              <span v-else-if="['gte','gt','lte','lt'].includes(selectedNode.data.op)">(数字)</span>
+            </div>
             <VTextField
               v-model="valueAsString"
               variant="outlined" density="compact" hide-details
@@ -552,7 +652,9 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
         <!-- Action -->
         <template v-if="selectedNode.data.kind === 'action'">
           <div class="field-label">动作类型</div>
-          <VSelect v-model="selectedNode.data.type" :items="meta.action_types" variant="outlined" density="compact" hide-details class="mb-3" />
+          <VSelect v-model="selectedNode.data.type" :items="toItems(meta.action_types)"
+                   item-title="title" item-value="value"
+                   variant="outlined" density="compact" hide-details class="mb-3" />
 
           <div v-for="f in (actionFieldsByType[selectedNode.data.type] || [])" :key="f.key" class="mb-3">
             <div class="field-label">{{ f.label }}</div>
