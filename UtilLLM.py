@@ -21,6 +21,8 @@ async def generate_ai_reply_with_retry(
     kb_context: str,
     kb_instructions: str,
     memory_context: str,
+    # --- 素材库 (可选): [{id, kind, title, description}, ...] ---
+    material_catalog: list = None,
     # --- 配置 ---
     max_retries: int = 3
 ) -> dict:
@@ -52,9 +54,18 @@ async def generate_ai_reply_with_retry(
             # 🆕 核心新增：让大模型顺手把语种报告给后端
             "detected_language": "你检测到的访客输入语言（如 'zh-CN', 'en-US', 'es', 'ja' 等）",
             # 🚨 严格枚举：基于访客最新消息的用词和语气判断；不允许新造词。
-            "customer_emotion": "必须且只能是以下英文枚举值之一: [calm, joy, excited, hesitation, impatience, anger]"
+            "customer_emotion": "必须且只能是以下英文枚举值之一: [calm, joy, excited, hesitation, impatience, anger]",
+            # 🆕 素材选择：从下方 material_catalog 中按需选 0~N 个素材的 id 一起发给访客；不需要就给空数组。严禁编造不在清单里的 id。
+            "selected_material_ids": []
         }
     }
+
+    # 🆕 素材清单注入: 仅当本活动有可用素材时, 把 id/类型/标题/描述给 LLM 作为选材依据。
+    if material_catalog:
+        system_prompt_dict["material_catalog"] = {
+            "instruction": "以下是当前可发送给访客的素材库。如果有助于推进对话(如展示产品图/演示视频/标准说明), 在 selected_material_ids 里填入对应素材的 id; 不合适就别选。只能选下列 id, 不要编造。",
+            "items": material_catalog,
+        }
 
     system_prompt_json = json.dumps(system_prompt_dict, ensure_ascii=False, indent=2)
     
@@ -98,6 +109,11 @@ async def generate_ai_reply_with_retry(
 
             if not ai_decision["reply_content"].strip():
                 raise ValueError("生成了空白回复")
+
+            # selected_material_ids 容错: 缺省/非 list 一律归一为 [] (不因此 raise, 保持鲁棒)
+            sel = ai_decision.get("selected_material_ids")
+            if not isinstance(sel, list):
+                ai_decision["selected_material_ids"] = []
 
             logger.success(f"Session {session_id} LLM ✅ LLM 质检通过 (耗费 {attempt} 次尝试)")
             return ai_decision

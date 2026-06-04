@@ -12,6 +12,7 @@ declare module 'vue' {
     CardStatisticsWithImages: typeof import('./src/@core/components/cards/CardStatisticsWithImages.vue')['default']
     CrudTable: typeof import('./src/components/CrudTable.vue')['default']
     ErrorHeader: typeof import('./src/components/ErrorHeader.vue')['default']
+    MessageContent: typeof import('./src/components/MessageContent.vue')['default']
     MoreBtn: typeof import('./src/@core/components/MoreBtn.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

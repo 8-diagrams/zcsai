@@ -54,6 +54,11 @@ export const routes = [
         meta: { roles: ['platform_admin', 'org_admin', 'group_admin'] },
       },
       {
+        path: 'org/materials',
+        component: () => import('@/pages/org/Materials.vue'),
+        meta: { roles: ['platform_admin', 'org_admin', 'group_admin'] },
+      },
+      {
         path: 'org/sessions',
         component: () => import('@/pages/org/Sessions.vue'),
         meta: { roles: ['platform_admin', 'org_admin'] },

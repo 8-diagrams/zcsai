@@ -75,6 +75,13 @@ const auth = useAuthStore()
     />
     <VerticalNavLink
       :item="{
+        title: '素材库',
+        icon: 'ri-image-2-line',
+        to: '/org/materials',
+      }"
+    />
+    <VerticalNavLink
+      :item="{
         title: '会话总览',
         icon: 'ri-chat-3-line',
         to: '/org/sessions',
@@ -119,6 +126,13 @@ const auth = useAuthStore()
         title: '组内知识库',
         icon: 'ri-book-open-line',
         to: '/org/kbs',
+      }"
+    />
+    <VerticalNavLink
+      :item="{
+        title: '组内素材库',
+        icon: 'ri-image-2-line',
+        to: '/org/materials',
       }"
     />
     <VerticalNavLink

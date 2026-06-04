@@ -26,6 +26,8 @@ from config import settings, YQrequirement
 from router_kb import router as kb_router
 from router_auth import router as auth_router
 from router_admin import router as admin_router
+from router_upload import router as upload_router
+from router_material import router as material_router
 
 
 # 移除默认配置
@@ -184,6 +186,44 @@ class AgentConnectionManager:
 
 
 agent_manager = AgentConnectionManager()
+
+
+# ==========================================
+# 4.6 媒体下发 helper
+# 既推 WS (action=inject_media, 与 RuleEngine 同款 payload) 又落库 Message(媒体列)。
+# LLM 选材 / 人工发媒体两条路径共用。
+# ==========================================
+async def push_media(db, conn_id: str, sess, *, kind: str, url: str,
+                     caption: Optional[str] = None, sender_id: Optional[str] = None,
+                     sender_type: str = "employee", log=None):
+    _log = log or logger
+    # 落库: 专用媒体列 (content 冗余存 url, 方便历史/报表按文本检索)
+    db.add(Message(
+        session_id=sess.id,
+        org_id=sess.org_id,
+        group_id=sess.group_id,
+        activity_id=sess.activity_id,
+        sender_type=sender_type,
+        sender_id=sender_id,
+        content=url or "",
+        content_type=kind,
+        media_url=url,
+        media_caption=caption,
+        stage_at_send=sess.current_stage,
+        emotion_at_send=sess.current_emotion,
+        visitor_nickname_at_send=sess.visitor_nickname,
+        visitor_email_at_send=sess.visitor_email,
+        visitor_platform_at_send=sess.platform_type,
+        visitor_platform_id_at_send=sess.visitor_uid,
+    ))
+    await db.commit()
+    # 推 WS
+    payload = {"session_id": sess.id, "kind": kind, "url": url}
+    if caption:
+        payload["caption"] = caption
+    await manager.send_to_client(conn_id, {"action": "inject_media", "data": payload})
+    _log.info(f"📤 [media] session={sess.id} 已下发 {kind} -> {url}")
+
 
 # ==========================================
 # 5. 核心：大模型推理与记忆处理 (后台任务)
@@ -413,7 +453,38 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 log.warning(f"Session {session_id} ⚠️ Mem0 检索失败 (可能是首次连接): {me}  {traceback.format_exc()} ")
                 memory_context = "暂无"
             metrics["C_Mem0_Search"] = time.perf_counter() - t0
-            
+
+            # C.5 素材清单: 查本活动可用素材 (本组 + 共享), 给 LLM 选材。
+            #     可见性镜像 UtilRAG: group_id 本组 OR (同 org 且 is_shared_to_groups)。
+            #     activity 维度: 该 activity 专属 OR org 级通用(activity_id IS NULL)。
+            material_catalog = []
+            material_by_id = {}
+            try:
+                from models import Material as _Material
+                from sqlalchemy import or_ as _or
+                mstmt = select(_Material).where(_Material.org_id == sess.org_id)
+                if sess.group_id:
+                    mstmt_filter = _or(
+                        _Material.group_id == sess.group_id,
+                        _Material.is_shared_to_groups.is_(True),
+                    )
+                    mstmt = mstmt.where(mstmt_filter)
+                mstmt = mstmt.where(
+                    _or(_Material.activity_id == sess.activity_id, _Material.activity_id.is_(None))
+                )
+                mres = await db.execute(mstmt)
+                for m in mres.scalars().all():
+                    material_by_id[m.id] = m
+                    material_catalog.append({
+                        "id": m.id, "kind": m.kind, "title": m.title,
+                        "description": m.description or "",
+                    })
+                if material_catalog:
+                    log.info(f"Session {session_id} 🎁 本活动可用素材 {len(material_catalog)} 个: {[m['id'] for m in material_catalog]}")
+            except Exception as e:
+                log.warning(f"Session {session_id} ⚠️ 素材清单查询失败, 本轮不带素材: {e}")
+                material_catalog, material_by_id = [], {}
+
             # D. 调用大模型 (已重构为带质检与状态裁判的高级引擎)
             t0 = time.perf_counter()
             log.info(f"Session {session_id} 📡 正在呼叫云端大模型 (LLM)，附带质检与状态机裁判...")
@@ -446,6 +517,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 kb_context=final_kb_context,
                 kb_instructions=final_kb_instructions,
                 memory_context=memory_context,
+                material_catalog=material_catalog,
                 max_retries=3
             )
             
@@ -564,6 +636,40 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 "data": {"session_id": session_id, "text": ai_reply_text, "simulate_typing": True}
             })
             #send WS
+
+            # E.5 LLM 选材下发: 按 id 取素材 (校验必须在本轮可用清单内, 越权静默丢弃不报错)
+            selected_ids = ai_decision.get("selected_material_ids") or []
+            for mid in selected_ids:
+                mat = material_by_id.get(mid)
+                if mat is None:
+                    log.warning(f"Session {session_id} ⚠️ LLM 选了不在清单内的素材 {mid!r}, 丢弃")
+                    continue
+                try:
+                    if mat.kind == "text":
+                        # 文本素材当作一条普通回复补发
+                        await manager.send_to_client(connection_id, {
+                            "action": "inject_reply",
+                            "data": {"session_id": session_id, "text": mat.text_content or "", "simulate_typing": False},
+                        })
+                        db.add(Message(
+                            session_id=session_id, org_id=sess.org_id, group_id=sess.group_id,
+                            activity_id=sess.activity_id, sender_type="employee", sender_id=sess.employee_id,
+                            content=mat.text_content or "",
+                            stage_at_send=sess.current_stage, emotion_at_send=sess.current_emotion,
+                            visitor_nickname_at_send=sess.visitor_nickname, visitor_email_at_send=sess.visitor_email,
+                            visitor_platform_at_send=sess.platform_type, visitor_platform_id_at_send=sess.visitor_uid,
+                        ))
+                        await db.commit()
+                    else:
+                        await push_media(
+                            db, connection_id, sess,
+                            kind=mat.kind, url=mat.media_url, caption=mat.title,
+                            sender_id=sess.employee_id, log=log,
+                        )
+                    log.info(f"Session {session_id} 🎁 已发送 LLM 选定素材 {mid} ({mat.kind})")
+                except Exception as e:
+                    log.warning(f"Session {session_id} ⚠️ 发送素材 {mid} 失败: {e}")
+
             metrics["E_WS"] = time.perf_counter() - t0
             t0 = time.perf_counter()
             # ==========================================
@@ -803,6 +909,14 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(kb_router)
+app.include_router(upload_router)
+app.include_router(material_router)
+
+# 上传素材静态托管: /media/<file> -> settings.UPLOAD_DIR
+import os as _os
+from fastapi.staticfiles import StaticFiles
+_os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+app.mount("/media", StaticFiles(directory=settings.UPLOAD_DIR), name="media")
 
 #router
 # URL: /ws/{activity_id}/{visitor_uid}

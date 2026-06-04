@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # 允许跨域的前端 origin (逗号分隔)
     FRONTEND_ORIGINS: str = "http://localhost:3001,http://127.0.0.1:3001"
 
+    # 上传素材本地落盘目录 (生产可换对象存储); 通过 /media 静态挂载对外访问
+    UPLOAD_DIR: str = "./uploads"
+
     # 指定从 .env 文件读取
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

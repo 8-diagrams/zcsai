@@ -1,5 +1,5 @@
 <script setup>
-import { api } from '@/utils/api'
+import { api, mediaUrl } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -66,6 +66,53 @@ const close = async () => {
   if (!confirm('确定关闭该会话?')) return
   try {
     await api.post(`/api/sessions/${sid.value}/close`, {})
+    await reload()
+  } catch (e) { errorMsg.value = e.detail || e.message }
+}
+
+// ===== 媒体发送 (走 agent-reply, 需会话处于人工接管中) =====
+const fileInput = ref(null)
+const uploading = ref(false)
+const matDialog = ref(false)
+const materials = ref([])
+const matLoading = ref(false)
+
+const triggerUpload = () => fileInput.value?.click()
+
+const onFilePicked = async (e) => {
+  const file = e.target.files?.[0]
+  if (!file) return
+  uploading.value = true
+  errorMsg.value = ''
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const { url, kind } = await api.postFile('/api/uploads', fd)
+    await api.post(`/api/sessions/${sid.value}/agent-reply`, { content_type: kind, media_url: url })
+    await reload()
+  } catch (err) {
+    errorMsg.value = err.detail || err.message
+  } finally {
+    uploading.value = false
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
+
+const openMaterials = async () => {
+  matDialog.value = true
+  matLoading.value = true
+  try {
+    const aid = session.value?.activity_id
+    materials.value = await api.get(`/api/orgs/${auth.orgId}/materials`, aid ? { activity_id: aid } : {})
+  } catch (e) {
+    errorMsg.value = e.detail || e.message
+  } finally { matLoading.value = false }
+}
+
+const sendMaterial = async (mat) => {
+  try {
+    await api.post(`/api/sessions/${sid.value}/agent-reply`, { material_id: mat.id })
+    matDialog.value = false
     await reload()
   } catch (e) { errorMsg.value = e.detail || e.message }
 }
@@ -174,7 +221,7 @@ const stageLabel = (code) => {
                 {{ emotionMeta(m.emotion_at_send).label }}
               </VChip>
             </div>
-            <div style="white-space: pre-wrap">{{ m.content }}</div>
+            <MessageContent :m="m" />
           </div>
         </div>
         <div v-if="!loading && !messages.length" class="text-center text-medium-emphasis py-4">
@@ -205,7 +252,57 @@ const stageLabel = (code) => {
             发送
           </VBtn>
         </div>
+        <div class="d-flex mt-2" style="gap:8px">
+          <input ref="fileInput" type="file" accept="image/*,video/*" style="display:none" @change="onFilePicked" />
+          <VBtn
+            size="small"
+            variant="tonal"
+            prepend-icon="ri-image-add-line"
+            :loading="uploading"
+            :disabled="session?.status !== 'active'"
+            @click="triggerUpload"
+          >
+            上传图片/视频
+          </VBtn>
+          <VBtn
+            size="small"
+            variant="tonal"
+            prepend-icon="ri-folder-image-line"
+            :disabled="session?.status !== 'active'"
+            @click="openMaterials"
+          >
+            从素材库选
+          </VBtn>
+        </div>
+        <div class="text-caption text-medium-emphasis mt-1">
+          发送图片/视频/素材需先「接管」会话
+        </div>
       </VCardText>
     </VCard>
+
+    <!-- 素材库选择 -->
+    <VDialog v-model="matDialog" max-width="640">
+      <VCard title="从素材库选择">
+        <VCardText>
+          <div v-if="matLoading" class="text-center py-4">加载中…</div>
+          <div v-else-if="!materials.length" class="text-center text-medium-emphasis py-4">暂无可用素材</div>
+          <VRow v-else>
+            <VCol v-for="mat in materials" :key="mat.id" cols="6" md="4">
+              <VCard variant="outlined" class="pa-2" style="cursor:pointer" @click="sendMaterial(mat)">
+                <img v-if="mat.kind === 'image'" :src="mediaUrl(mat.media_url)" style="width:100%; height:96px; object-fit:cover; border-radius:6px" />
+                <video v-else-if="mat.kind === 'video'" :src="mediaUrl(mat.media_url)" style="width:100%; height:96px; object-fit:cover; border-radius:6px" />
+                <div v-else class="text-truncate text-caption pa-2" style="height:96px; overflow:hidden">{{ mat.text_content }}</div>
+                <div class="text-caption font-weight-medium text-truncate mt-1">{{ mat.title }}</div>
+                <VChip size="x-small" variant="tonal">{{ mat.kind }}</VChip>
+              </VCard>
+            </VCol>
+          </VRow>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn @click="matDialog = false">关闭</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </div>
 </template>

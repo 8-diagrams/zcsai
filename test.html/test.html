@@ -164,6 +164,11 @@
             if (data.action === "inject_reply") {
                 injectAIMessage(data.data.text);
             }
+
+            // 接收到媒体下发指令 (图片/视频/链接)
+            if (data.action === "inject_media") {
+                injectAIMedia(data.data);
+            }
         };
         
         ws.onclose = () => {
@@ -235,6 +240,28 @@
             // 滚动到底部
             chatBox.scrollTop = chatBox.scrollHeight;
         }, 1000); // 模拟 1 秒的物理按键延迟
+    }
+
+    // 媒体下发: 把后端相对路径 /media/xxx 拼成完整地址 (与 WS 同主机)
+    const MEDIA_BASE = "http://127.0.0.1:1081";
+    function resolveMediaUrl(u) {
+        if (!u) return "";
+        if (/^https?:\/\//.test(u)) return u;
+        return MEDIA_BASE + (u.startsWith("/") ? u : "/" + u);
+    }
+    function injectAIMedia(d) {
+        const url = resolveMediaUrl(d.url);
+        const caption = d.caption ? `<div class="media-caption">${d.caption}</div>` : "";
+        let html;
+        if (d.kind === "image") {
+            html = `<a href="${url}" target="_blank"><img src="${url}" style="max-width:200px;max-height:200px;border-radius:8px;display:block" /></a>${caption}`;
+        } else if (d.kind === "video") {
+            html = `<video src="${url}" controls style="max-width:240px;max-height:200px;border-radius:8px;display:block"></video>${caption}`;
+        } else {
+            // link / payment 等
+            html = `<a href="${url}" target="_blank">${d.caption || url}</a>`;
+        }
+        appendMessage(html, 'ai-msg');
     }
 
     // 辅助函数：向聊天框添加气泡

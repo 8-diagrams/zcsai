@@ -198,7 +198,7 @@ const stageLabel = (code) => {
                 </VChip>
                 <span class="text-caption text-medium-emphasis">{{ senderLabel(m) }} · {{ fmtTime(m.created_at) }}</span>
               </div>
-              <div class="mt-1" style="white-space: pre-wrap">{{ m.content }}</div>
+              <div class="mt-1"><MessageContent :m="m" /></div>
             </div>
             <div v-if="!msgLoading && !messages.length" class="text-center text-medium-emphasis py-4">
               暂无消息

@@ -149,6 +149,12 @@ class Message(Base):
     sender_id = Column(String(100), nullable=True, comment="发送者实体ID")
     content = Column(Text, comment="聊天内容")
 
+    # === 富媒体: 图片/视频/链接 消息 ===
+    # 纯文本消息 content_type='text'、media_url=NULL; server_default 保证历史行兼容。
+    content_type = Column(String(20), nullable=False, server_default="text", comment="text/image/video/link")
+    media_url = Column(String(1000), nullable=True, comment="图片/视频/链接 URL")
+    media_caption = Column(String(500), nullable=True, comment="媒体说明文字")
+
     # === P1 新增: 这条消息发出时 session 的状态快照 ===
     stage_at_send = Column(String(50), nullable=True, index=True, comment="发出时 session 所处 stage")
     emotion_at_send = Column(
@@ -314,4 +320,24 @@ class WebhookDeadLetter(Base):
     payload = Column(JSON, nullable=True)
     last_error = Column(Text, nullable=True)
     attempts = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ========================================================
+# 6. 素材库 (Material)
+# 镜像 KnowledgeBase 的多租户 + 共享字段; LLM 与人工均可引用。
+# ========================================================
+class Material(Base):
+    __tablename__ = "materials"
+
+    id = Column(String(50), primary_key=True)                       # mat_xxxx
+    org_id = Column(String(50), index=True, comment="所属公司ID")
+    group_id = Column(String(50), nullable=True, index=True, comment="所属团队ID")
+    is_shared_to_groups = Column(Boolean, default=False, comment="是否共享给同 org 其他组")
+    activity_id = Column(String(50), nullable=True, index=True, comment="NULL = org 级通用素材")
+    kind = Column(String(20), comment="image/video/text")
+    title = Column(String(200), comment="素材标题")
+    description = Column(Text, nullable=True, comment="给 LLM 看的选材依据")
+    media_url = Column(String(1000), nullable=True, comment="image/video 的 URL")
+    text_content = Column(Text, nullable=True, comment="kind=text 时的文本内容")
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -4,6 +4,13 @@
 const BASE_URL = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const TOKEN_KEY = 'access_token'
 
+// 把后端返回的相对媒体路径 (/media/xxx) 拼成完整 URL; 已是绝对地址则原样返回。
+export const mediaUrl = (u) => {
+  if (!u) return ''
+  if (/^https?:\/\//.test(u)) return u
+  return BASE_URL + (u.startsWith('/') ? u : '/' + u)
+}
+
 export const getToken = () => localStorage.getItem(TOKEN_KEY)
 export const setToken = (t) => localStorage.setItem(TOKEN_KEY, t)
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY)
@@ -18,12 +25,15 @@ function buildUrl(path, params) {
   return u.toString()
 }
 
-async function request(method, path, { body, params, form, headers = {} } = {}) {
+async function request(method, path, { body, params, form, file, headers = {} } = {}) {
   const token = getToken()
   const finalHeaders = { ...headers }
   let payload
 
-  if (form) {
+  if (file instanceof FormData) {
+    // multipart/form-data: 不手动设 Content-Type, 让浏览器自动带 boundary
+    payload = file
+  } else if (form) {
     // application/x-www-form-urlencoded
     payload = new URLSearchParams(form)
   } else if (body !== undefined) {
@@ -72,6 +82,7 @@ export const api = {
   get: (p, params) => request('GET', p, { params }),
   post: (p, body) => request('POST', p, { body }),
   postForm: (p, form) => request('POST', p, { form }),
+  postFile: (p, formData) => request('POST', p, { file: formData }),
   patch: (p, body) => request('PATCH', p, { body }),
   put: (p, body) => request('PUT', p, { body }),
   delete: (p) => request('DELETE', p),

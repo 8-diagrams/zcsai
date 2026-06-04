@@ -637,7 +637,13 @@ async def _persist_rule_message(
     rule_id: str,
     payload: Optional[dict] = None,
 ):
-    """规则触发的消息按 sender_type=system 入库, 携带 fired_by_rule_id 便于检索。"""
+    """规则触发的消息按 sender_type=system 入库, 携带 fired_by_rule_id 便于检索。
+
+    富媒体(image/video/link)落 content_type/media_url/media_caption 专用列, 与
+    LLM/人工发媒体链路同一种存法; payload 的额外细节(label/amount/currency 等)仍存
+    llm_decision_raw 备查。payment 仍按文本消息处理(无专用列)。
+    """
+    is_media = kind in ("image", "video", "link")
     msg = Message(
         session_id=sess.id,
         org_id=sess.org_id,
@@ -646,6 +652,9 @@ async def _persist_rule_message(
         sender_type="system",
         sender_id=None,
         content=content if content else f"[{kind}]",
+        content_type=kind if is_media else "text",
+        media_url=(payload or {}).get("url") if is_media else None,
+        media_caption=(payload or {}).get("caption") or (payload or {}).get("label") if is_media else None,
         stage_at_send=sess.current_stage,
         emotion_at_send=sess.current_emotion,
         visitor_nickname_at_send=sess.visitor_nickname,

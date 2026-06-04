@@ -27,6 +27,7 @@ from models import (
     Employee,
     Group,
     KnowledgeBase,
+    Material,
     Message,
     Organization,
     Referrer,
@@ -742,6 +743,9 @@ class MessageOut(BaseModel):
     sender_type: str
     sender_id: Optional[str] = None
     content: str
+    content_type: str = "text"
+    media_url: Optional[str] = None
+    media_caption: Optional[str] = None
     stage_at_send: Optional[str] = None
     emotion_at_send: Optional[str] = None
     visitor_nickname_at_send: Optional[str] = None
@@ -1126,7 +1130,11 @@ async def release_session(
 
 
 class AgentReplyIn(BaseModel):
-    content: str
+    content: str = ""
+    content_type: str = "text"               # text/image/video/link
+    media_url: Optional[str] = None
+    media_caption: Optional[str] = None
+    material_id: Optional[str] = None        # 引用素材库 -> 后端取出填充 content_type/media_url
 
 
 @router.post("/sessions/{sid}/agent-reply", response_model=MessageOut)
@@ -1136,13 +1144,39 @@ async def agent_reply(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """坐席在接管中发消息: 写 Message + Mem0 + WS push 给访客。"""
+    """坐席在接管中发消息: 写 Message + Mem0 + WS push 给访客。支持文本与图片/视频/链接。"""
     sess = await _load_session_or_403(sid, db, user)
     if not sess.is_human_takeover:
         raise HTTPException(400, "会话未处于人工接管中,请先 /takeover")
+
+    content_type = body.content_type or "text"
+    media_url = body.media_url
+    media_caption = body.media_caption
     text = (body.content or "").strip()
-    if not text:
-        raise HTTPException(400, "消息内容不能为空")
+
+    # 引用素材库: 取出素材填充 content_type/media_url (校验同 org)
+    if body.material_id:
+        mres = await db.execute(select(Material).where(Material.id == body.material_id))
+        mat = mres.scalar_one_or_none()
+        if not mat:
+            raise HTTPException(404, "素材不存在")
+        assert_same_org(user, mat.org_id)
+        if mat.kind == "text":
+            content_type = "text"
+            text = (mat.text_content or "").strip()
+        else:
+            content_type = mat.kind            # image/video
+            media_url = mat.media_url
+            media_caption = media_caption or mat.title
+
+    # 校验: 文本类要 content 非空; 媒体类要 media_url 非空
+    if content_type == "text":
+        if not text:
+            raise HTTPException(400, "消息内容不能为空")
+    else:
+        if not (media_url or "").strip():
+            raise HTTPException(400, f"content_type={content_type} 必须提供 media_url")
+
     msg = Message(
         session_id=sid,
         org_id=sess.org_id,
@@ -1150,7 +1184,10 @@ async def agent_reply(
         activity_id=sess.activity_id,
         sender_type="employee",
         sender_id=user.employee_id or user.id,
-        content=text,
+        content=text if content_type == "text" else (media_url or ""),
+        content_type=content_type,
+        media_url=media_url,
+        media_caption=media_caption,
         stage_at_send=sess.current_stage,
         emotion_at_send=sess.current_emotion,
         visitor_nickname_at_send=sess.visitor_nickname,
@@ -1165,17 +1202,27 @@ async def agent_reply(
     # 写 Mem0 + WS push 给访客 (异步, 失败不阻塞 API)
     try:
         from main import visitor_memory_layer, manager as visitor_manager
-        if sess.visitor_uid:
+        # 仅文本进 Mem0 (媒体 URL 无记忆价值)
+        if sess.visitor_uid and content_type == "text" and text:
             visitor_memory_layer.add(
                 [{"role": "assistant", "content": text}],
                 user_id=sess.visitor_uid,
             )
         if sess.activity_id and sess.visitor_uid:
             conn_id = f"{sess.activity_id}_{sess.visitor_uid}"
-            await visitor_manager.send_to_client(conn_id, {
-                "action": "inject_reply",
-                "data": {"session_id": sid, "text": text, "simulate_typing": True, "by": "human"},
-            })
+            if content_type == "text":
+                await visitor_manager.send_to_client(conn_id, {
+                    "action": "inject_reply",
+                    "data": {"session_id": sid, "text": text, "simulate_typing": True, "by": "human"},
+                })
+            else:
+                payload = {"session_id": sid, "kind": content_type, "url": media_url, "by": "human"}
+                if media_caption:
+                    payload["caption"] = media_caption
+                await visitor_manager.send_to_client(conn_id, {
+                    "action": "inject_media",
+                    "data": payload,
+                })
     except Exception:
         # 记日志即可,不向调用方暴露
         from loguru import logger as _lg

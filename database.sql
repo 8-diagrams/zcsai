@@ -344,4 +344,27 @@ ALTER TABLE messages
     ADD COLUMN fired_by_rule_id VARCHAR(50) NULL COMMENT '该消息由哪条规则触发' AFTER llm_decision_raw,
     ADD INDEX idx_fired_rule (fired_by_rule_id);
 
+-- 6) 富媒体消息 + 素材库 (见 migrations/011_materials_and_media.sql)
+ALTER TABLE messages
+    ADD COLUMN content_type VARCHAR(20) NOT NULL DEFAULT 'text' COMMENT 'text/image/video/link' AFTER content,
+    ADD COLUMN media_url VARCHAR(1000) NULL COMMENT '图片/视频/链接 URL' AFTER content_type,
+    ADD COLUMN media_caption VARCHAR(500) NULL COMMENT '媒体说明文字' AFTER media_url;
+
+CREATE TABLE materials (
+    id VARCHAR(50) PRIMARY KEY COMMENT '素材ID mat_xxxx',
+    org_id VARCHAR(50) NOT NULL COMMENT '所属公司ID',
+    group_id VARCHAR(50) NULL COMMENT '所属团队ID',
+    is_shared_to_groups BOOLEAN NOT NULL DEFAULT FALSE COMMENT '是否共享给同 org 其他组',
+    activity_id VARCHAR(50) NULL COMMENT 'NULL = org 级通用素材',
+    kind VARCHAR(20) NOT NULL COMMENT 'image/video/text',
+    title VARCHAR(200) NULL COMMENT '素材标题',
+    description TEXT NULL COMMENT '给 LLM 看的选材依据',
+    media_url VARCHAR(1000) NULL COMMENT 'image/video 的 URL',
+    text_content TEXT NULL COMMENT 'kind=text 时的文本内容',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_materials_org (org_id),
+    INDEX idx_materials_group (group_id),
+    INDEX idx_materials_activity (activity_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
