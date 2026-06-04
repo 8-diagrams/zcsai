@@ -302,7 +302,8 @@ CREATE TABLE session_rule_fires (
     fired_at_total_turn INT NULL,
     fired_at_stage_turn INT NULL,
     actions_executed JSON NULL,
-    UNIQUE KEY uq_session_rule_once (session_id, rule_id),
+    -- 注: 不加 UNIQUE(session_id, rule_id); every_n_turns / once_per_stage 政策需要写多条;
+    --     once_per_session 由 _can_fire_by_policy 在应用层用 SELECT 查询保证。
     INDEX idx_session (session_id),
     INDEX idx_rule (rule_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

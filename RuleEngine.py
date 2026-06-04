@@ -24,7 +24,7 @@ from typing import Optional
 
 import httpx
 from loguru import logger
-from sqlalchemy import select, insert, desc
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
@@ -241,19 +241,32 @@ async def _can_fire_by_policy(
     if policy.startswith("every_n_turns:"):
         try:
             n = int(policy.split(":", 1)[1])
+            if n <= 0:
+                raise ValueError("n 必须 > 0")
         except Exception:
             logger.warning(f"[RuleEngine] 非法 fire_policy: {policy}, 默认拒绝")
             return False
+        # 用 MAX(fired_at_total_turn): 关心"上一次触发时的回合数",
+        # 不用 ORDER BY fired_at DESC LIMIT 1 (语义同, 但更经得起后期改表/补数据)
+        from sqlalchemy import func as _sa_func
         r = await db.execute(
-            select(SessionRuleFire.fired_at_total_turn)
+            select(_sa_func.max(SessionRuleFire.fired_at_total_turn))
             .where(SessionRuleFire.session_id == session_id)
             .where(SessionRuleFire.rule_id == rule.id)
-            .order_by(desc(SessionRuleFire.fired_at)).limit(1)
         )
         last = r.scalar_one_or_none()
         if last is None:
+            logger.debug(
+                f"[RuleEngine] every_n_turns rule={rule.id} 历史无触发, 允许"
+            )
             return True
-        return (current_total_turn - int(last)) >= n
+        delta = current_total_turn - int(last)
+        allowed = delta >= n
+        logger.debug(
+            f"[RuleEngine] every_n_turns:{n} rule={rule.id} "
+            f"last_turn={last} cur_turn={current_total_turn} delta={delta} -> {'allow' if allowed else 'deny'}"
+        )
+        return allowed
 
     logger.warning(f"[RuleEngine] 未知 fire_policy={policy!r}, 默认拒绝")
     return False
@@ -426,21 +439,32 @@ async def dispatch_many(
 
         # 写一行审计
         try:
-            await db.execute(
-                insert(SessionRuleFire).prefix_with("IGNORE").values(
-                    session_id=sess.id,
-                    rule_id=rule.id,
-                    fired_at_stage=sess.current_stage,
-                    fired_at_total_turn=sess.total_turn_count,
-                    fired_at_stage_turn=sess.stage_turn_count,
-                    actions_executed=action_results,
-                )
-            )
+            # 注意: 这里以前用 INSERT IGNORE + 唯一约束 (session_id, rule_id) 兜底 once_per_session,
+            #      但副作用是 every_n_turns / once_per_stage / always 政策下, 第二次及以后的命中行
+            #      会被静默丢弃, 进而毒化 every_n_turns 的"上次触发回合"查询。
+            # 现在: 直接 INSERT 一行,所有政策都靠 _can_fire_by_policy 应用层兜底。
+            db.add(SessionRuleFire(
+                session_id=sess.id,
+                rule_id=rule.id,
+                fired_at_stage=sess.current_stage,
+                fired_at_total_turn=sess.total_turn_count,
+                fired_at_stage_turn=sess.stage_turn_count,
+                actions_executed=action_results,
+            ))
             await db.commit()
             out.fired_rule_ids.append(rule.id)
         except Exception as e:
-            log.warning(f"[RuleEngine/{phase}] 写审计 session_rule_fires 失败 rule={rule.id}: {e}")
-            await db.rollback()
+            # commit 失败 (例如旧库还有 uq_session_rule_once 唯一约束, 撞约束抛 IntegrityError):
+            # 必须显式 rollback 让 session 回可用态, 否则后续别处 commit 全炸
+            # "transaction has been rolled back due to a previous exception during flush"。
+            log.warning(
+                f"[RuleEngine/{phase}] 写审计 session_rule_fires 失败 rule={rule.id}: {e}. "
+                f"若是 IntegrityError(uq_session_rule_once), 请跑 migrations/007_*.sql"
+            )
+            try:
+                await db.rollback()
+            except Exception as rb_err:
+                log.warning(f"[RuleEngine/{phase}] rollback 也失败 rule={rule.id}: {rb_err}")
 
     # 整批结论 (transfer/override/block 等聚合 flag)
     log.info(

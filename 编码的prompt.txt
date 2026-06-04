@@ -189,6 +189,7 @@ await websocket.send_text(final_reply)
 
 
 
-
+ 规则的应用范围, 只能选所有的 activity, 不对, 应该能选择某个 activity
+ 
 
 
