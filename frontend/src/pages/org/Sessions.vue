@@ -75,6 +75,15 @@ watch(filters, reload, { deep: true })
 
 const fmtTime = (t) => t ? new Date(t).toLocaleString() : ''
 const statusColor = (s) => ({ active: 'success', closed: 'default', transferred: 'warning' }[s] || 'default')
+// 访客展示名: 优先昵称, 其次平台ID, 最后会话ID
+const visitorName = (s) => s?.visitor_nickname || s?.visitor_uid || s?.id || ''
+// 单条消息发送方标签: 访客优先用发出时昵称快照, 退回当前会话昵称/平台ID
+const senderLabel = (m) => {
+  if (m.sender_type === 'visitor') {
+    return m.visitor_nickname_at_send || m.visitor_platform_id_at_send || visitorName(selected.value)
+  }
+  return m.sender_id || ''
+}
 const EMOTION_META = {
   calm:       { label: '平静', color: 'default' },
   joy:        { label: '喜悦', color: 'success' },
@@ -131,11 +140,11 @@ const stageLabel = (code) => {
                   </VAvatar>
                 </template>
                 <VListItemTitle>
-                  {{ s.visitor_uid || s.id }}
+                  {{ visitorName(s) }}
                   <VChip size="x-small" class="ms-1" :color="statusColor(s.status)">{{ s.status }}</VChip>
                 </VListItemTitle>
                 <VListItemSubtitle class="text-caption">
-                  阶段: {{ s.current_stage || '-' }} · 渠道: {{ s.platform_type || '-' }} · {{ fmtTime(s.created_at) }}
+                  <span v-if="s.visitor_nickname && s.visitor_uid">ID: {{ s.visitor_uid }} · </span>阶段: {{ s.current_stage || '-' }} · 渠道: {{ s.platform_type || '-' }} · {{ fmtTime(s.created_at) }}
                 </VListItemSubtitle>
               </VListItem>
               <VListItem v-if="!loading && !sessions.length">
@@ -150,7 +159,7 @@ const stageLabel = (code) => {
         <VCard style="min-height: 70vh">
           <VCardItem>
             <VCardTitle>
-              {{ selected ? (selected.visitor_uid || selected.id) : '消息流' }}
+              {{ selected ? visitorName(selected) : '消息流' }}
             </VCardTitle>
             <template v-if="selected" #append>
               <VChip size="small" :color="statusColor(selected.status)">{{ selected.status }}</VChip>
@@ -187,7 +196,7 @@ const stageLabel = (code) => {
                 >
                   {{ emotionMeta(m.emotion_at_send).label }}
                 </VChip>
-                <span class="text-caption text-medium-emphasis">{{ m.sender_id }} · {{ fmtTime(m.created_at) }}</span>
+                <span class="text-caption text-medium-emphasis">{{ senderLabel(m) }} · {{ fmtTime(m.created_at) }}</span>
               </div>
               <div class="mt-1" style="white-space: pre-wrap">{{ m.content }}</div>
             </div>

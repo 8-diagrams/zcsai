@@ -57,7 +57,7 @@ CREATE TABLE sessions (
     org_id VARCHAR(50) NOT NULL COMMENT '归属公司ID',
     group_id VARCHAR(50) NULL COMMENT '当前分配的组别',
     employee_id VARCHAR(50) NULL COMMENT '当前接待的客服ID(可以是AI)',
-    platform_type ENUM('whatsapp', 'telegram', 'wechat', 'web_demo') NOT NULL COMMENT '来源渠道',
+    platform_type VARCHAR(50) NOT NULL COMMENT '来源渠道(所属平台); 自由字符串, 如 whatsapp/telegram/wechat/web_demo/fb_business',
     visitor_uid VARCHAR(100) NOT NULL COMMENT '访客在外部平台的唯一ID',
     status ENUM('active', 'closed', 'transferred') DEFAULT 'active' COMMENT '会话生命周期',
     -- === P1 新增: 情绪 + 多维回合数 + 接管审计 ===

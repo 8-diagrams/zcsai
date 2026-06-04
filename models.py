@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Integer, Text, DateTime, JSON, Enum as SQLEnum, Numeric
+from sqlalchemy import Column, String, Boolean, Integer, Text, DateTime, JSON, Enum as SQLEnum, Numeric, Float
 from sqlalchemy import ForeignKey
 from database import Base
 
@@ -99,7 +99,7 @@ class SessionRecord(Base):
     activity_id = Column(String(50), index=True, nullable=True, comment="当前参与的活动ID")
     employee_id = Column(String(50), index=True, nullable=True, comment="当前接待的坐席ID")
 
-    platform_type = Column(String(20), nullable=True, comment="来源渠道(所属平台): whatsapp/telegram/wechat/web_demo")
+    platform_type = Column(String(50), nullable=False, comment="来源渠道(所属平台): 自由字符串, 如 whatsapp/telegram/wechat/web_demo/fb_business")
     visitor_uid = Column(String(100), nullable=True, comment="访客外部唯一ID(平台ID)")
 
     # === 访客 profile: 便于后续主动联系访客 ===
@@ -160,12 +160,20 @@ class Message(Base):
     # === 访客 profile 快照: 消息发出时访客的联系信息, 便于后续按消息复盘/联系 ===
     visitor_nickname_at_send = Column(String(100), nullable=True, comment="发出时访客昵称")
     visitor_email_at_send = Column(String(120), nullable=True, comment="发出时访客邮箱")
-    visitor_platform_at_send = Column(String(20), nullable=True, comment="发出时访客所属平台")
+    visitor_platform_at_send = Column(String(50), nullable=True, comment="发出时访客所属平台")
     visitor_platform_id_at_send = Column(String(100), nullable=True, comment="发出时访客平台ID")
 
     llm_decision_raw = Column(JSON, nullable=True, comment="仅 sender_type=employee 时有值: LLM 当轮完整返回")
     # === P2 新增: 该消息由哪条规则触发(NULL = LLM/人工/系统兜底所发) ===
     fired_by_rule_id = Column(String(50), nullable=True, index=True, comment="规则触发本条消息的 rule_id")
+
+    # === 下游平台历史回传: 源平台消息的原始时间戳(epoch 秒, 带小数)。
+    # 用于 report_history 重复上报时按 (source_ts, sender_type, content) 去重幂等。
+    # 实时进线的消息此列为 NULL。===
+    source_ts = Column(Float, nullable=True, index=True, comment="源平台消息时间戳(epoch秒); 历史回传去重用")
+    # 源平台消息稳定唯一ID(预留): 下游若回传 message_id, 则历史去重优先用它(最鲁棒, 不惧乱序/增量上报)。
+    # 当前下游未必提供; 缺省 NULL 时回退到 (位置+方向+文本) 顺序指纹去重。
+    source_msg_id = Column(String(128), nullable=True, index=True, comment="源平台消息唯一ID(预留); 历史回传去重优先键")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

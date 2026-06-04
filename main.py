@@ -222,7 +222,8 @@ async def match_employee_for_activity(db, activity: Activity, log) -> Optional[E
 
 
 async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str, visitor_uid: str, activity_id: str,
-                           visitor_nickname: Optional[str] = None, visitor_email: Optional[str] = None):
+                           visitor_nickname: Optional[str] = None, visitor_email: Optional[str] = None,
+                           visitor_source_ts: Optional[float] = None, visitor_source_msg_id: Optional[str] = None):
     # 为当前 Session 创建一个独立的日志标识（Logger Context）
     log = logger.bind(session_id=session_id, visitor=visitor_uid, activity=activity_id, conn=connection_id)
     log.info(f"🚀 [新任务] 开始处理 | activity={activity_id} visitor={visitor_uid} session={session_id} text='{visitor_msg}'")
@@ -308,6 +309,8 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 visitor_email_at_send=sess.visitor_email,
                 visitor_platform_at_send=sess.platform_type,
                 visitor_platform_id_at_send=sess.visitor_uid,
+                source_ts=visitor_source_ts,
+                source_msg_id=visitor_source_msg_id,
             ))
             await db.commit()
             log.info(f"Session {session_id} 📝 访客消息已落库 (session={session_id}, len={len(visitor_msg)}, stage={sess.current_stage}, emotion={sess.current_emotion})")
@@ -601,7 +604,186 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             log.success(report)
         except Exception as e:
             log.exception(f"💥 处理会话时发生崩溃: {e}")
-            
+
+
+async def process_history_import(
+    connection_id: str,
+    session_id: str,
+    visitor_uid: str,
+    activity_id: str,
+    platform: Optional[str],
+    raw_messages: list,
+):
+    """下游平台回传历史聊天记录(action=report_history)。
+
+    规则:
+      - 历史会话仅落库 + 写 Mem0, 不过 LLM。
+      - 例外: 若历史的最后一条消息是访客发的(direction=in)且系统尚未回复过它,
+        则把这条交给 process_ai_reply 走完整 LLM 流程(它负责落库 + Mem0 + 推送)。
+      - 幂等: 按 (source_ts, sender_type, content) 去重; 重复 report_history 不会重复落库/重复进 Mem0。
+
+    direction 映射: in -> visitor, out/self -> employee。
+    """
+    log = logger.bind(session_id=session_id, visitor=visitor_uid, activity=activity_id, conn=connection_id)
+    log.info(f"📜 [历史导入] 收到 {len(raw_messages)} 条历史消息 platform={platform}")
+
+    # 规整 + 跳过空文本; 保留原始顺序
+    items = []
+    for m in raw_messages:
+        text = (m.get("text") or "").strip()
+        if not text:
+            continue
+        direction = m.get("direction")
+        sender_type = "visitor" if direction == "in" else "employee"
+        items.append({
+            "text": text,
+            "sender_type": sender_type,
+            "sender_name": m.get("sender"),
+            "source_ts": m.get("timestamp"),
+            "source_msg_id": m.get("message_id") or m.get("msg_id") or m.get("id"),
+        })
+    if not items:
+        log.warning("📜 [历史导入] 规整后无有效消息, 放弃")
+        return
+
+    # 末条是否访客发出 -> 决定是否触发 LLM; 触发时该条不在历史批量导入, 交给 process_ai_reply
+    last = items[-1]
+    trigger_llm = last["sender_type"] == "visitor"
+    history_items = items[:-1] if trigger_llm else items
+
+    # 访客昵称: 取最后一条 visitor 消息的 sender 名
+    visitor_nickname = next(
+        (it["sender_name"] for it in reversed(items)
+         if it["sender_type"] == "visitor" and it["sender_name"]),
+        None,
+    )
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # A. 查/建 session
+            result = await db.execute(select(SessionRecord).where(SessionRecord.id == session_id))
+            sess = result.scalar_one_or_none()
+            if not sess:
+                act_res = await db.execute(select(Activity).where(Activity.id == activity_id))
+                act = act_res.scalar_one_or_none()
+                if not act:
+                    log.error(f"📜 [历史导入] activity_id={activity_id} 不存在, 放弃")
+                    return
+                matched = await match_employee_for_activity(db, act, log)
+                sess = SessionRecord(
+                    id=session_id,
+                    org_id=act.org_id,
+                    group_id=act.group_id,
+                    activity_id=activity_id,
+                    employee_id=matched.id if matched is not None else None,
+                    visitor_uid=visitor_uid,
+                    visitor_nickname=visitor_nickname,
+                    platform_type=platform or "fb_business",
+                    status="active",
+                )
+                db.add(sess)
+                await db.flush()
+                log.success(f"📜 [历史导入] 新建 session {session_id} org={sess.org_id} platform={sess.platform_type}")
+            else:
+                # 增量刷新昵称/平台(只覆盖非空)
+                if visitor_nickname and visitor_nickname != sess.visitor_nickname:
+                    sess.visitor_nickname = visitor_nickname
+                if platform and platform != sess.platform_type:
+                    sess.platform_type = platform
+
+            # B. 取已落库消息(按插入顺序 = 位置序), 用于去重。两种策略:
+            #   1) 优先: 下游回传了 source_msg_id -> 按 ID 去重(最鲁棒, 不惧乱序/增量上报);
+            #   2) 回退: 无 ID -> 按「位置 + 方向 + 文本」顺序指纹(下游每次全量回传且重打时间戳, 故不能用 ts 去重)。
+            existing_res = await db.execute(
+                select(Message.sender_type, Message.content, Message.source_msg_id)
+                .where(Message.session_id == session_id)
+                .order_by(Message.id.asc())
+            )
+            existing = existing_res.all()  # [(sender_type, content, source_msg_id), ...] 按位置
+            existing_n = len(existing)
+            existing_ids = {r[2] for r in existing if r[2] is not None}
+            # 本批是否带 ID: 全批都带才走 ID 路径, 避免半带半不带导致漏判
+            use_id_dedup = bool(history_items) and all(it["source_msg_id"] for it in history_items)
+
+            def _is_dup(i, it):
+                if use_id_dedup:
+                    return it["source_msg_id"] in existing_ids
+                # 顺序指纹: 位置 i 已有且 (方向, 文本) 一致即视为重复
+                return i < existing_n and (existing[i][0], existing[i][1]) == (it["sender_type"], it["text"])
+
+            # C. 批量落库历史(跳过重复), 同步收集需要写 Mem0 的对话
+            inserted = 0
+            mem_msgs = []
+            for i, it in enumerate(history_items):
+                if _is_dup(i, it):
+                    continue
+                db.add(Message(
+                    session_id=session_id,
+                    org_id=sess.org_id,
+                    group_id=sess.group_id,
+                    activity_id=sess.activity_id,
+                    sender_type=it["sender_type"],
+                    sender_id=visitor_uid if it["sender_type"] == "visitor" else sess.employee_id,
+                    content=it["text"],
+                    stage_at_send=sess.current_stage,
+                    emotion_at_send=sess.current_emotion,
+                    visitor_nickname_at_send=sess.visitor_nickname,
+                    visitor_email_at_send=sess.visitor_email,
+                    visitor_platform_at_send=sess.platform_type,
+                    visitor_platform_id_at_send=sess.visitor_uid,
+                    source_ts=it["source_ts"],
+                    source_msg_id=it["source_msg_id"],
+                ))
+                inserted += 1
+                # Mem0 角色: visitor=user, employee=assistant
+                role = "user" if it["sender_type"] == "visitor" else "assistant"
+                mem_msgs.append({"role": role, "content": it["text"]})
+
+            await db.commit()
+            _dedup_mode = "ID" if use_id_dedup else "顺序指纹"
+            log.success(f"📜 [历史导入] 落库 {inserted} 条新消息 ({_dedup_mode}去重后), 跳过 {len(history_items) - inserted} 条重复")
+
+            # D. 历史对话写 Mem0(仅本次新增的, 避免重复刻录)
+            if mem_msgs:
+                try:
+                    visitor_memory_layer.add(mem_msgs, user_id=visitor_uid)
+                    log.success(f"📜 [历史导入] {len(mem_msgs)} 条历史已写入 Mem0")
+                except Exception as e:
+                    log.warning(f"📜 [历史导入] Mem0 写入失败: {e}")
+        except Exception as e:
+            log.exception(f"📜 [历史导入] 处理崩溃: {e}")
+            return
+
+    # E. 末条是访客 -> 走完整 LLM 流程(它自己开 db session, 负责落库+Mem0+推送)
+    if trigger_llm:
+        # 幂等: 若末条此前已落库(重复上报且上轮已触发过 LLM), 不再重复触发。
+        #   - ID 路径: 末条 source_msg_id 已存在;
+        #   - 顺序路径: 末条位置(=len(history_items))上已有同向同文消息。
+        if use_id_dedup:
+            already_handled = last["source_msg_id"] in existing_ids
+        else:
+            last_pos = len(history_items)
+            already_handled = (
+                last_pos < existing_n
+                and (existing[last_pos][0], existing[last_pos][1]) == ("visitor", last["text"])
+            )
+        if already_handled:
+            log.info("📜 [历史导入] 末条访客消息此前已处理, 跳过 LLM 触发")
+            return
+        log.info("📜 [历史导入] 末条为访客消息, 触发 LLM 续聊")
+        await process_ai_reply(
+            connection_id,
+            session_id,
+            last["text"],
+            visitor_uid,
+            activity_id,
+            visitor_nickname,
+            None,
+            last["source_ts"],
+            last["source_msg_id"],
+        )
+
+
 # ==========================================
 # 6. FastAPI 路由挂载
 # ==========================================
@@ -665,6 +847,27 @@ async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid
                         activity_id,
                         visitor_nickname,
                         visitor_email,
+                    )
+                )
+            elif data.get("action") == "report_history":
+                # 下游平台回传历史聊天记录: 仅落库 + Mem0, 末条若为访客则触发 LLM 续聊
+                payload = data["payload"]
+                await websocket.send_json({"action": "ack"})
+
+                payload_visitor_uid = payload.get("visitor_uid")
+                if payload_visitor_uid and payload_visitor_uid != visitor_uid:
+                    logger.warning(
+                        f"⚠️ report_history payload.visitor_uid={payload_visitor_uid} 与 URL={visitor_uid} 不一致，以 URL 为准"
+                    )
+
+                asyncio.create_task(
+                    process_history_import(
+                        connection_id,
+                        payload["session_id"],
+                        visitor_uid,
+                        activity_id,
+                        payload.get("platform"),
+                        payload.get("messages") or [],
                     )
                 )
             else:

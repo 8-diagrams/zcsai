@@ -83,6 +83,18 @@ onUnmounted(() => timer && clearInterval(timer))
 
 const fmtTime = (t) => t ? new Date(t).toLocaleTimeString() : ''
 const statusColor = (s) => ({ active: 'success', closed: 'default', transferred: 'warning' }[s] || 'default')
+
+// 访客展示名: 优先昵称, 其次平台ID, 最后会话ID
+const visitorName = computed(() =>
+  session.value?.visitor_nickname || session.value?.visitor_uid || sid.value
+)
+// 单条消息的发送方标签: 访客优先用发出时的昵称快照, 退回当前会话昵称/平台ID
+const senderLabel = (m) => {
+  if (m.sender_type === 'visitor') {
+    return m.visitor_nickname_at_send || m.visitor_platform_id_at_send || visitorName.value
+  }
+  return m.sender_id ? `${m.sender_type} · ${m.sender_id}` : m.sender_type
+}
 const EMOTION_META = {
   calm:       { label: '平静', color: 'default' },
   joy:        { label: '喜悦', color: 'success' },
@@ -105,10 +117,10 @@ const stageLabel = (code) => {
     <VCard>
       <VCardItem>
         <VCardTitle>
-          会话: {{ session?.visitor_uid || sid }}
+          会话: {{ visitorName }}
         </VCardTitle>
         <VCardSubtitle v-if="session">
-          阶段: {{ session.current_stage || '-' }} · 活动: {{ session.activity_id || '-' }} · 渠道: {{ session.platform_type || '-' }}
+          <span v-if="session.visitor_nickname && session.visitor_uid">ID: {{ session.visitor_uid }} · </span>阶段: {{ session.current_stage || '-' }} · 活动: {{ session.activity_id || '-' }} · 渠道: {{ session.platform_type || '-' }}
         </VCardSubtitle>
         <template v-if="session" #append>
           <VChip size="small" :color="statusColor(session.status)">{{ session.status }}</VChip>
@@ -144,7 +156,7 @@ const stageLabel = (code) => {
             border: '1px solid rgba(0,0,0,0.08)'
           }">
             <div class="text-caption text-medium-emphasis mb-1 d-flex align-center flex-wrap" style="gap:6px">
-              <span>{{ m.sender_type }}{{ m.sender_id ? ' · ' + m.sender_id : '' }} · {{ fmtTime(m.created_at) }}</span>
+              <span>{{ senderLabel(m) }} · {{ fmtTime(m.created_at) }}</span>
               <VChip
                 v-if="m.stage_at_send"
                 size="x-small"

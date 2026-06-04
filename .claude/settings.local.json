@@ -13,7 +13,9 @@
       "Bash(grep *)",
       "Bash(python3 -c \"import sys, json; d=json.load\\(sys.stdin\\); print\\([s.get\\('key'\\) or s.get\\('id'\\) or s.get\\('stage'\\) for s in \\(d if isinstance\\(d,list\\) else d.get\\('stages', []\\)\\)][:20]\\); print\\(json.dumps\\(d if not isinstance\\(d,list\\) else d[0], ensure_ascii=False, indent=2\\)[:500]\\)\")",
       "Bash(pytest *)",
-      "Bash(python -m py_compile models.py main.py router_admin.py RuleEngine.py)"
+      "Bash(python -m py_compile models.py main.py router_admin.py RuleEngine.py)",
+      "Bash(timeout 180 npm run build)",
+      "Bash(npm run *)"
     ]
   }
 }

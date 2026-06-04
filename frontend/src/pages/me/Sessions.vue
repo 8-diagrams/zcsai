@@ -65,7 +65,7 @@ const statusColor = (s) => ({ active: 'success', closed: 'default', transferred:
           { title: '创建时间', key: 'created_at' },
           { title: '', key: 'actions', sortable: false, width: 100 },
         ]"
-        :items="sessions.map(s => ({ ...s, visitor: s.visitor_uid || s.id }))"
+        :items="sessions.map(s => ({ ...s, visitor: s.visitor_nickname || s.visitor_uid || s.id }))"
         :loading="loading"
         item-value="id"
         @click:row="(e, { item }) => open(item)"
