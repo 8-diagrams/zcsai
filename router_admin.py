@@ -678,6 +678,8 @@ class SessionOut(BaseModel):
     employee_id: Optional[str] = None
     platform_type: Optional[str] = None
     visitor_uid: Optional[str] = None
+    visitor_nickname: Optional[str] = None
+    visitor_email: Optional[str] = None
     status: Optional[str] = None
     current_stage: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -742,6 +744,10 @@ class MessageOut(BaseModel):
     content: str
     stage_at_send: Optional[str] = None
     emotion_at_send: Optional[str] = None
+    visitor_nickname_at_send: Optional[str] = None
+    visitor_email_at_send: Optional[str] = None
+    visitor_platform_at_send: Optional[str] = None
+    visitor_platform_id_at_send: Optional[str] = None
     created_at: Optional[datetime] = None
 
     class Config:
@@ -866,6 +872,33 @@ async def close_session(
     ))
     await db.commit()
     return {"status": "ok"}
+
+
+class VisitorProfileIn(BaseModel):
+    visitor_nickname: Optional[str] = None
+    visitor_email: Optional[str] = None
+
+
+@router.patch("/sessions/{sid}/visitor-profile", response_model=SessionOut)
+async def update_visitor_profile(
+    sid: str,
+    body: VisitorProfileIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """更新访客 profile(昵称/email),便于后续主动联系访客。
+
+    隔离规则同会话读取:坐席只能改自己的会话,组管理员限本组,org 管理员限本 org。
+    仅传入的字段会被更新;传 null/不传则保持原值不变。
+    """
+    sess = await _load_session_or_403(sid, db, user)
+    if body.visitor_nickname is not None:
+        sess.visitor_nickname = body.visitor_nickname
+    if body.visitor_email is not None:
+        sess.visitor_email = body.visitor_email
+    await db.commit()
+    await db.refresh(sess)
+    return sess
 
 
 # =============================================================
@@ -1120,6 +1153,10 @@ async def agent_reply(
         content=text,
         stage_at_send=sess.current_stage,
         emotion_at_send=sess.current_emotion,
+        visitor_nickname_at_send=sess.visitor_nickname,
+        visitor_email_at_send=sess.visitor_email,
+        visitor_platform_at_send=sess.platform_type,
+        visitor_platform_id_at_send=sess.visitor_uid,
     )
     db.add(msg)
     await db.commit()

@@ -99,8 +99,13 @@ class SessionRecord(Base):
     activity_id = Column(String(50), index=True, nullable=True, comment="当前参与的活动ID")
     employee_id = Column(String(50), index=True, nullable=True, comment="当前接待的坐席ID")
 
-    platform_type = Column(String(20), nullable=True, comment="来源渠道: whatsapp/telegram/wechat/web_demo")
-    visitor_uid = Column(String(100), nullable=True, comment="访客外部唯一ID")
+    platform_type = Column(String(20), nullable=True, comment="来源渠道(所属平台): whatsapp/telegram/wechat/web_demo")
+    visitor_uid = Column(String(100), nullable=True, comment="访客外部唯一ID(平台ID)")
+
+    # === 访客 profile: 便于后续主动联系访客 ===
+    visitor_nickname = Column(String(100), nullable=True, comment="访客昵称")
+    visitor_email = Column(String(120), nullable=True, comment="访客邮箱")
+
     status = Column(
         SQLEnum("active", "closed", "transferred"),
         default="active",
@@ -152,6 +157,12 @@ class Message(Base):
             nullable=False,
             comment="访客最近一次被识别到的情绪",
         )
+    # === 访客 profile 快照: 消息发出时访客的联系信息, 便于后续按消息复盘/联系 ===
+    visitor_nickname_at_send = Column(String(100), nullable=True, comment="发出时访客昵称")
+    visitor_email_at_send = Column(String(120), nullable=True, comment="发出时访客邮箱")
+    visitor_platform_at_send = Column(String(20), nullable=True, comment="发出时访客所属平台")
+    visitor_platform_id_at_send = Column(String(100), nullable=True, comment="发出时访客平台ID")
+
     llm_decision_raw = Column(JSON, nullable=True, comment="仅 sender_type=employee 时有值: LLM 当轮完整返回")
     # === P2 新增: 该消息由哪条规则触发(NULL = LLM/人工/系统兜底所发) ===
     fired_by_rule_id = Column(String(50), nullable=True, index=True, comment="规则触发本条消息的 rule_id")

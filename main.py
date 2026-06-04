@@ -221,7 +221,8 @@ async def match_employee_for_activity(db, activity: Activity, log) -> Optional[E
     return chosen
 
 
-async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str, visitor_uid: str, activity_id: str):
+async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str, visitor_uid: str, activity_id: str,
+                           visitor_nickname: Optional[str] = None, visitor_email: Optional[str] = None):
     # 为当前 Session 创建一个独立的日志标识（Logger Context）
     log = logger.bind(session_id=session_id, visitor=visitor_uid, activity=activity_id, conn=connection_id)
     log.info(f"🚀 [新任务] 开始处理 | activity={activity_id} visitor={visitor_uid} session={session_id} text='{visitor_msg}'")
@@ -269,6 +270,8 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                     activity_id=activity_id,
                     employee_id=bind_employee_id,
                     visitor_uid=visitor_uid,
+                    visitor_nickname=visitor_nickname,
+                    visitor_email=visitor_email,
                     platform_type="web_demo",
                     status="active",
                 )
@@ -283,6 +286,11 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                     f"Session {session_id} 🔁 命中已有 Session | org={sess.org_id} group={sess.group_id} "
                     f"activity={sess.activity_id} employee={sess.employee_id} stage={sess.current_stage}"
                 )
+                # 访客可能在后续进线时补全/更新昵称或 email，这里增量刷新（只覆盖非空，不清掉已有值）
+                if visitor_nickname and visitor_nickname != sess.visitor_nickname:
+                    sess.visitor_nickname = visitor_nickname
+                if visitor_email and visitor_email != sess.visitor_email:
+                    sess.visitor_email = visitor_email
             session = sess
             # A.5 立刻把访客的话落库 (独立提交，保证 LLM 失败也不会丢访客输入)
             # stage/emotion 快照是访客说话当下的 session 状态 (LLM 还没跑)
@@ -296,6 +304,10 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 content=visitor_msg,
                 stage_at_send=sess.current_stage,
                 emotion_at_send=sess.current_emotion,
+                visitor_nickname_at_send=sess.visitor_nickname,
+                visitor_email_at_send=sess.visitor_email,
+                visitor_platform_at_send=sess.platform_type,
+                visitor_platform_id_at_send=sess.visitor_uid,
             ))
             await db.commit()
             log.info(f"Session {session_id} 📝 访客消息已落库 (session={session_id}, len={len(visitor_msg)}, stage={sess.current_stage}, emotion={sess.current_emotion})")
@@ -533,6 +545,10 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 content=ai_reply_text,
                 stage_at_send=sess.current_stage,       # post-flip stage (db.refresh 之后的)
                 emotion_at_send=sess.current_emotion,   # 这一轮 LLM 检测到的情绪
+                visitor_nickname_at_send=sess.visitor_nickname,
+                visitor_email_at_send=sess.visitor_email,
+                visitor_platform_at_send=sess.platform_type,
+                visitor_platform_id_at_send=sess.visitor_uid,
                 llm_decision_raw=ai_decision,           # LLM 完整决策快照，供后台复盘
             ))
             await db.commit()
@@ -635,6 +651,10 @@ async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid
                         f"⚠️ payload.visitor_uid={payload_visitor_uid} 与 URL visitor_uid={visitor_uid} 不一致，以 URL 为准"
                     )
 
+                # 访客 profile（昵称/email）由前端进线时上报，可选；缺省为 None
+                visitor_nickname = payload.get("visitor_nickname") or payload.get("nickname")
+                visitor_email = payload.get("visitor_email") or payload.get("email")
+
                 # 将全套 AI 逻辑（查库+查记忆+请求LLM）放入后台任务，实现超高并发
                 asyncio.create_task(
                     process_ai_reply(
@@ -643,6 +663,8 @@ async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid
                         payload["text"],
                         visitor_uid,
                         activity_id,
+                        visitor_nickname,
+                        visitor_email,
                     )
                 )
             else:

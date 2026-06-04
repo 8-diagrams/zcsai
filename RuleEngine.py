@@ -648,6 +648,10 @@ async def _persist_rule_message(
         content=content if content else f"[{kind}]",
         stage_at_send=sess.current_stage,
         emotion_at_send=sess.current_emotion,
+        visitor_nickname_at_send=sess.visitor_nickname,
+        visitor_email_at_send=sess.visitor_email,
+        visitor_platform_at_send=sess.platform_type,
+        visitor_platform_id_at_send=sess.visitor_uid,
         llm_decision_raw=payload,
         fired_by_rule_id=rule_id,
     )
@@ -684,6 +688,10 @@ async def _do_transfer_to_human(
         content=f"[系统] 会话已转人工: {reason}",
         stage_at_send=sess.current_stage,
         emotion_at_send=sess.current_emotion,
+        visitor_nickname_at_send=sess.visitor_nickname,
+        visitor_email_at_send=sess.visitor_email,
+        visitor_platform_at_send=sess.platform_type,
+        visitor_platform_id_at_send=sess.visitor_uid,
         fired_by_rule_id=rule.id,
     ))
 
