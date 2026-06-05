@@ -241,6 +241,7 @@
   },
   "meSession": {
     "backToList": "返回会话列表",
+    "autoRefresh": "自动刷新",
     "sessionLabel": "会话",
     "confirmClose": "确定关闭该会话?",
     "inputPlaceholder": "输入回复内容,Ctrl/Cmd + Enter 发送",

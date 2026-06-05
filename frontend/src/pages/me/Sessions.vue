@@ -29,10 +29,11 @@ const reload = async ({ silent = false } = {}) => {
 onMounted(() => reload())
 watch(statusFilter, () => reload())
 
+const autoRefresh = ref(true)
 let timer = null
 onMounted(() => {
   timer = setInterval(() => {
-    if (statusFilter.value === 'active') reload({ silent: true })
+    if (autoRefresh.value && statusFilter.value === 'active') reload({ silent: true })
   }, 5000)
 })
 onUnmounted(() => timer && clearInterval(timer))
@@ -48,6 +49,15 @@ const statusColor = (s) => ({ active: 'success', closed: 'default', transferred:
       <VCardItem>
         <VCardTitle>{{ t('nav.mySessions') }} <VChip size="small" class="ms-2">{{ sessions.length }}</VChip></VCardTitle>
         <template #append>
+          <VSwitch
+            v-model="autoRefresh"
+            :label="t('meSession.autoRefresh')"
+            color="primary"
+            density="compact"
+            hide-details
+            inset
+            class="me-3"
+          />
           <VSelect
             v-model="statusFilter"
             :items="statusOptions"
@@ -55,7 +65,7 @@ const statusColor = (s) => ({ active: 'success', closed: 'default', transferred:
             hide-details
             style="max-width: 180px"
           />
-          <VBtn icon="ri-refresh-line" variant="text" @click="reload" />
+          <VBtn icon="ri-refresh-line" variant="text" @click="reload()" />
         </template>
       </VCardItem>
       <VDivider />

@@ -846,10 +846,13 @@ async def send_session_message(
             )
         if sess.activity_id and sess.visitor_uid:
             conn_id = f"{sess.activity_id}_{sess.visitor_uid}"
-            await visitor_manager.send_to_client(conn_id, {
+            ws_msg = {
                 "action": "inject_reply",
                 "data": {"session_id": sid, "text": text, "simulate_typing": True, "by": "human"},
-            })
+            }
+            from loguru import logger as _lg
+            _lg.info(f"📤 [send_session_message] 下发访客 conn_id={conn_id} payload={ws_msg}")
+            await visitor_manager.send_to_client(conn_id, ws_msg)
     except Exception:
         from loguru import logger as _lg
         _lg.exception(f"send_session_message 推送/Mem0 失败 sid={sid}")
@@ -1279,20 +1282,20 @@ async def agent_reply(
             )
         if sess.activity_id and sess.visitor_uid:
             conn_id = f"{sess.activity_id}_{sess.visitor_uid}"
+            from loguru import logger as _lg
             if content_type == "text":
-                await visitor_manager.send_to_client(conn_id, {
+                ws_msg = {
                     "action": "inject_reply",
                     "data": {"session_id": sid, "text": text, "simulate_typing": True, "by": "human"},
-                })
+                }
             else:
                 from config import to_public_url
                 payload = {"session_id": sid, "kind": content_type, "url": to_public_url(media_url), "by": "human"}
                 if media_caption:
                     payload["caption"] = media_caption
-                await visitor_manager.send_to_client(conn_id, {
-                    "action": "inject_media",
-                    "data": payload,
-                })
+                ws_msg = {"action": "inject_media", "data": payload}
+            _lg.info(f"📤 [agent_reply] 下发访客 conn_id={conn_id} payload={ws_msg}")
+            await visitor_manager.send_to_client(conn_id, ws_msg)
     except Exception:
         # 记日志即可,不向调用方暴露
         from loguru import logger as _lg

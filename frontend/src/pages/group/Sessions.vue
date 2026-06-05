@@ -21,6 +21,7 @@ const messages = ref([])
 const msgLoading = ref(false)
 const stagesByActivity = ref({})
 const employees = ref([])
+const autoRefresh = ref(true)
 
 const loadOptions = async () => {
   if (!auth.orgId || !auth.groupId) return
@@ -99,7 +100,7 @@ onMounted(async () => {
   await loadOptions()
   await reload()
   timer = setInterval(() => {
-    if (filters.value.status === 'active') {
+    if (autoRefresh.value && filters.value.status === 'active') {
       reload()
       if (selected.value) loadMessages(selected.value, { silent: true })
     }
@@ -143,7 +144,14 @@ const stageLabel = (code) => {
         <VSelect v-model="filters.activity_id" :items="activityOptions" :label="t('sessions.activity')" density="compact" hide-details style="min-width: 220px" />
         <VSelect v-model="filters.status" :items="statusOptions" :label="t('sessions.status')" density="compact" hide-details style="min-width: 160px" />
         <VBtn icon="ri-refresh-line" variant="text" @click="reload" />
-        <span class="text-caption text-medium-emphasis">{{ t('groupSessions.autoRefresh') }}</span>
+        <VSwitch
+          v-model="autoRefresh"
+          :label="t('meSession.autoRefresh')"
+          color="primary"
+          density="compact"
+          hide-details
+          inset
+        />
       </VCardText>
     </VCard>
 

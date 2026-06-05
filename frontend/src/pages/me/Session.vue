@@ -134,10 +134,11 @@ const sendMaterial = async (mat) => {
 onMounted(() => reload())
 watch(sid, () => reload())
 
+const autoRefresh = ref(true)
 let timer = null
 onMounted(() => {
   timer = setInterval(() => {
-    if (session.value?.status === 'active') reload({ silent: true })
+    if (autoRefresh.value && session.value?.status === 'active') reload({ silent: true })
   }, 4000)
 })
 onUnmounted(() => timer && clearInterval(timer))
@@ -180,6 +181,15 @@ const stageLabel = (code) => {
           <span v-if="session.visitor_nickname && session.visitor_uid">ID: {{ session.visitor_uid }} · </span>{{ t('sessions.stage') }}: {{ session.current_stage || '-' }} · {{ t('sessions.activity') }}: {{ session.activity_id || '-' }} · {{ t('sessions.channel') }}: {{ session.platform_type || '-' }}
         </VCardSubtitle>
         <template v-if="session" #append>
+          <VSwitch
+            v-model="autoRefresh"
+            :label="t('meSession.autoRefresh')"
+            color="primary"
+            density="compact"
+            hide-details
+            inset
+            class="me-3"
+          />
           <VChip size="small" :color="statusColor(session.status)">{{ session.status }}</VChip>
           <VBtn
             v-if="session.status === 'active'"

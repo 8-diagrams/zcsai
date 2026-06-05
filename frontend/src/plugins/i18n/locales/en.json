@@ -241,6 +241,7 @@
   },
   "meSession": {
     "backToList": "Back to session list",
+    "autoRefresh": "Auto-refresh",
     "sessionLabel": "Session",
     "confirmClose": "Close this session?",
     "inputPlaceholder": "Type a reply, Ctrl/Cmd + Enter to send",
