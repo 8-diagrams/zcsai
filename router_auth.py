@@ -63,6 +63,30 @@ async def me(user: User = Depends(get_current_user)):
     return UserOut.model_validate(user)
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """修改当前登录用户自己的密码: 校验旧密码 + 设置新密码。"""
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    new_pwd = (body.new_password or "").strip()
+    if len(new_pwd) < 8:
+        raise HTTPException(status_code=400, detail="新密码至少 8 位")
+    if verify_password(new_pwd, user.password_hash):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+    user.password_hash = hash_password(new_pwd)
+    await db.commit()
+    return {"status": "ok"}
+
+
 # 平台超管首次部署可调用 /api/auth/bootstrap?secret=xxx 重置 root 密码
 class BootstrapIn(BaseModel):
     secret: str

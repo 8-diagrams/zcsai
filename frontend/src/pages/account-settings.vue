@@ -1,72 +1,117 @@
 <script setup>
-import { useRoute } from 'vue-router'
-import AccountSettingsAccount from '@/views/pages/account-settings/AccountSettingsAccount.vue'
-import AccountSettingsNotification from '@/views/pages/account-settings/AccountSettingsNotification.vue'
-import AccountSettingsSecurity from '@/views/pages/account-settings/AccountSettingsSecurity.vue'
+import { api } from '@/utils/api'
+import { useI18n } from 'vue-i18n'
 
-const route = useRoute()
-const activeTab = ref(route.params.tab)
+const { t } = useI18n()
 
-// tabs
-const tabs = [
-  {
-    title: 'Account',
-    icon: 'ri-group-line',
-    tab: 'account',
-  },
-  {
-    title: 'Security',
-    icon: 'ri-lock-line',
-    tab: 'security',
-  },
-  {
-    title: 'Notifications',
-    icon: 'ri-notification-3-line',
-    tab: 'notification',
-  },
-]
+const currentPassword = ref('')
+const newPassword = ref('')
+const confirmPassword = ref('')
+const isCurrentVisible = ref(false)
+const isNewVisible = ref(false)
+const isConfirmVisible = ref(false)
+
+const submitting = ref(false)
+const errorMsg = ref('')
+const successMsg = ref('')
+
+const submit = async () => {
+  errorMsg.value = ''
+  successMsg.value = ''
+  if (!currentPassword.value || !newPassword.value) {
+    errorMsg.value = t('changePassword.fillAll')
+    return
+  }
+  if (newPassword.value.length < 8) {
+    errorMsg.value = t('changePassword.tooShort')
+    return
+  }
+  if (newPassword.value !== confirmPassword.value) {
+    errorMsg.value = t('changePassword.mismatch')
+    return
+  }
+  submitting.value = true
+  try {
+    await api.post('/api/auth/change-password', {
+      current_password: currentPassword.value,
+      new_password: newPassword.value,
+    })
+    successMsg.value = t('changePassword.success')
+    currentPassword.value = ''
+    newPassword.value = ''
+    confirmPassword.value = ''
+  } catch (e) {
+    errorMsg.value = e.detail || e.message
+  } finally { submitting.value = false }
+}
+
+const reset = () => {
+  currentPassword.value = ''
+  newPassword.value = ''
+  confirmPassword.value = ''
+  errorMsg.value = ''
+  successMsg.value = ''
+}
 </script>
 
 <template>
-  <div>
-    <VTabs
-      v-model="activeTab"
-      show-arrows
-      class="v-tabs-pill"
-    >
-      <VTab
-        v-for="item in tabs"
-        :key="item.icon"
-        :value="item.tab"
-      >
-        <VIcon
-          size="20"
-          start
-          :icon="item.icon"
-        />
-        {{ item.title }}
-      </VTab>
-    </VTabs>
+  <VRow>
+    <VCol cols="12" md="8" lg="6">
+      <VCard :title="t('changePassword.title')">
+        <VForm @submit.prevent="submit">
+          <VCardText>
+            <VAlert v-if="errorMsg" type="error" density="compact" class="mb-4">{{ errorMsg }}</VAlert>
+            <VAlert v-if="successMsg" type="success" density="compact" class="mb-4">{{ successMsg }}</VAlert>
 
-    <VWindow
-      v-model="activeTab"
-      class="mt-5 disable-tab-transition"
-      :touch="false"
-    >
-      <!-- Account -->
-      <VWindowItem value="account">
-        <AccountSettingsAccount />
-      </VWindowItem>
+            <VRow>
+              <VCol cols="12">
+                <VTextField
+                  v-model="currentPassword"
+                  :type="isCurrentVisible ? 'text' : 'password'"
+                  :append-inner-icon="isCurrentVisible ? 'ri-eye-off-line' : 'ri-eye-line'"
+                  :label="t('changePassword.current')"
+                  autocomplete="current-password"
+                  placeholder="············"
+                  @click:append-inner="isCurrentVisible = !isCurrentVisible"
+                />
+              </VCol>
+              <VCol cols="12">
+                <VTextField
+                  v-model="newPassword"
+                  :type="isNewVisible ? 'text' : 'password'"
+                  :append-inner-icon="isNewVisible ? 'ri-eye-off-line' : 'ri-eye-line'"
+                  :label="t('changePassword.new')"
+                  autocomplete="new-password"
+                  placeholder="············"
+                  @click:append-inner="isNewVisible = !isNewVisible"
+                />
+              </VCol>
+              <VCol cols="12">
+                <VTextField
+                  v-model="confirmPassword"
+                  :type="isConfirmVisible ? 'text' : 'password'"
+                  :append-inner-icon="isConfirmVisible ? 'ri-eye-off-line' : 'ri-eye-line'"
+                  :label="t('changePassword.confirm')"
+                  autocomplete="new-password"
+                  placeholder="············"
+                  @click:append-inner="isConfirmVisible = !isConfirmVisible"
+                />
+              </VCol>
+            </VRow>
 
-      <!-- Security -->
-      <VWindowItem value="security">
-        <AccountSettingsSecurity />
-      </VWindowItem>
+            <p class="text-caption text-medium-emphasis mt-3 mb-0">
+              {{ t('changePassword.requirement') }}
+            </p>
+          </VCardText>
 
-      <!-- Notification -->
-      <VWindowItem value="notification">
-        <AccountSettingsNotification />
-      </VWindowItem>
-    </VWindow>
-  </div>
+          <VCardText class="d-flex flex-wrap gap-4">
+            <VBtn type="submit" :loading="submitting">{{ t('general.save') }}</VBtn>
+            <VBtn type="button" color="secondary" variant="outlined" @click="reset">
+              {{ t('changePassword.reset') }}
+            </VBtn>
+          </VCardText>
+        </VForm>
+      </VCard>
+    </VCol>
+  </VRow>
 </template>

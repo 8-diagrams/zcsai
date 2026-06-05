@@ -692,6 +692,8 @@ class SessionOut(BaseModel):
     visitor_email: Optional[str] = None
     status: Optional[str] = None
     current_stage: Optional[str] = None
+    current_emotion: Optional[str] = None
+    is_human_takeover: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -1138,6 +1140,133 @@ async def stats_overview(
         activities=await _count(Activity),
         sessions=await _count(SessionRecord),
         messages=await _count(Message),
+    )
+
+
+# =============================================================
+# 8.1 Dashboard 角色感知汇总 (按 role 自动定范围)
+# =============================================================
+class DashboardSummaryOut(BaseModel):
+    scope: str
+    counts: dict
+    session_status: dict
+    emotion_distribution: dict
+    my: dict
+
+
+EMOTION_KEYS = ["calm", "joy", "excited", "hesitation", "impatience", "anger"]
+SESSION_STATUS_KEYS = ["active", "closed", "transferred"]
+
+
+@router.get("/dashboard/summary", response_model=DashboardSummaryOut)
+async def dashboard_summary(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Dashboard 汇总: 后端按 user.role 决定数据范围, 前端按 scope 渲染对应视图。
+    - platform_admin: 全平台
+    - org_admin:      本公司
+    - group_admin:    本公司 + 会话/坐席按本组收窄
+    - agent:          本组概览 + my(我的活跃/接管/未读通知)
+    """
+    role = user.role
+    scope = {"platform_admin": "platform", "org_admin": "org",
+             "group_admin": "group", "agent": "agent"}.get(role, "org")
+
+    def _apply_org(stmt, model):
+        if role != "platform_admin" and user.org_id:
+            stmt = stmt.where(model.org_id == user.org_id)
+        return stmt
+
+    def _apply_group(stmt, model):
+        # group_admin / agent 在 org 基础上再按本组收窄 (model 须有 group_id)
+        if role in ("group_admin", "agent") and user.group_id:
+            stmt = stmt.where(model.group_id == user.group_id)
+        return stmt
+
+    async def _count(model, *, group_scope: bool = False, extra=None):
+        stmt = select(func.count()).select_from(model)
+        stmt = _apply_org(stmt, model)
+        if group_scope:
+            stmt = _apply_group(stmt, model)
+        if extra is not None:
+            stmt = stmt.where(extra)
+        res = await db.execute(stmt)
+        return res.scalar() or 0
+
+    # --- 资产/实体计数 ---
+    counts = {}
+    if role == "platform_admin":
+        cnt_stmt = select(func.count()).select_from(Organization)
+        counts["organizations"] = (await db.execute(cnt_stmt)).scalar() or 0
+    counts["groups"] = await _count(Group)
+    counts["employees"] = await _count(Employee, group_scope=True)
+    counts["activities"] = await _count(Activity, group_scope=True)
+    counts["kbs"] = await _count(KnowledgeBase, group_scope=True)
+    counts["materials"] = await _count(Material, group_scope=True)
+    counts["sessions_total"] = await _count(SessionRecord, group_scope=True)
+    counts["sessions_active"] = await _count(
+        SessionRecord, group_scope=True, extra=(SessionRecord.status == "active"))
+    counts["sessions_human_takeover"] = await _count(
+        SessionRecord, group_scope=True, extra=(SessionRecord.is_human_takeover.is_(True)))
+
+    # --- 会话状态分布 (一次 group_by 查出) ---
+    ss_stmt = select(SessionRecord.status, func.count()).select_from(SessionRecord)
+    ss_stmt = _apply_group(_apply_org(ss_stmt, SessionRecord), SessionRecord).group_by(SessionRecord.status)
+    ss_rows = (await db.execute(ss_stmt)).all()
+    ss_map = {str(k): v for k, v in ss_rows}
+    session_status = {k: ss_map.get(k, 0) for k in SESSION_STATUS_KEYS}
+
+    # --- 情绪分布 (按 sessions.current_emotion) ---
+    em_stmt = select(SessionRecord.current_emotion, func.count()).select_from(SessionRecord)
+    em_stmt = _apply_group(_apply_org(em_stmt, SessionRecord), SessionRecord).group_by(SessionRecord.current_emotion)
+    em_rows = (await db.execute(em_stmt)).all()
+    # current_emotion 是 Python 枚举 SQLEnum, 查出来是 CustomerEmotion 对象,
+    # 取 .value 才是 'calm'/'joy' 等; 兼容已是字符串/None 的情况。
+    def _ekey(k):
+        if k is None:
+            return None
+        return getattr(k, "value", k)
+    em_map = {}
+    for k, v in em_rows:
+        em_map[_ekey(k)] = em_map.get(_ekey(k), 0) + v
+    emotion_distribution = {k: em_map.get(k, 0) for k in EMOTION_KEYS}
+
+    # --- agent 专属: 我的面板 ---
+    my = {}
+    if role == "agent" and user.employee_id:
+        my_active_stmt = select(func.count()).select_from(SessionRecord).where(
+            SessionRecord.employee_id == user.employee_id,
+            SessionRecord.status == "active",
+        )
+        my["active_sessions"] = (await db.execute(my_active_stmt)).scalar() or 0
+        my_takeover_stmt = select(func.count()).select_from(SessionRecord).where(
+            SessionRecord.employee_id == user.employee_id,
+            SessionRecord.is_human_takeover.is_(True),
+        )
+        my["takeover_sessions"] = (await db.execute(my_takeover_stmt)).scalar() or 0
+        # 未读通知: 定向给我 OR 同组广播
+        from sqlalchemy import or_ as _or
+        noti_stmt = select(func.count()).select_from(AgentNotification).where(
+            AgentNotification.org_id == user.org_id,
+            AgentNotification.is_read.is_(False),
+            _or(
+                AgentNotification.target_employee_id == user.employee_id,
+                AgentNotification.target_employee_id.is_(None),
+            ),
+        )
+        if user.group_id:
+            noti_stmt = noti_stmt.where(
+                _or(AgentNotification.group_id == user.group_id, AgentNotification.group_id.is_(None))
+            )
+        my["unread_notifications"] = (await db.execute(noti_stmt)).scalar() or 0
+
+    return DashboardSummaryOut(
+        scope=scope,
+        counts=counts,
+        session_status=session_status,
+        emotion_distribution=emotion_distribution,
+        my=my,
     )
 
 
