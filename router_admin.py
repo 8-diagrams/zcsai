@@ -6,7 +6,7 @@ from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -571,6 +571,15 @@ async def list_kbs(
 ):
     assert_same_org(user, org_id)
     stmt = select(KnowledgeBase).where(KnowledgeBase.org_id == org_id)
+    # 组隔离: group_admin/agent 只能看本组 OR 已共享给全组的库; org_admin+ 看全 org。
+    # (与 router_material.list_materials / UtilRAG 的可见性一致)
+    if user.role in ("group_admin", "agent") and user.group_id:
+        stmt = stmt.where(
+            or_(
+                KnowledgeBase.group_id == user.group_id,
+                KnowledgeBase.is_shared_to_groups.is_(True),
+            )
+        )
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -815,10 +824,35 @@ async def send_session_message(
         sender_type="employee",
         sender_id=user.employee_id or user.id,
         content=text,
+        stage_at_send=sess.current_stage,
+        emotion_at_send=sess.current_emotion,
+        visitor_nickname_at_send=sess.visitor_nickname,
+        visitor_email_at_send=sess.visitor_email,
+        visitor_platform_at_send=sess.platform_type,
+        visitor_platform_id_at_send=sess.visitor_uid,
     )
     db.add(msg)
     await db.commit()
     await db.refresh(msg)
+
+    # 坐席发的消息必须下发到访客 WS 窗口 (接管态下没有 LLM 帮忙推送了)。
+    # 同时写 Mem0, 与 /agent-reply 行为一致。失败只记日志, 不阻塞 API。
+    try:
+        from main import visitor_memory_layer, manager as visitor_manager
+        if sess.visitor_uid and text:
+            visitor_memory_layer.add(
+                [{"role": "assistant", "content": text}],
+                user_id=sess.visitor_uid,
+            )
+        if sess.activity_id and sess.visitor_uid:
+            conn_id = f"{sess.activity_id}_{sess.visitor_uid}"
+            await visitor_manager.send_to_client(conn_id, {
+                "action": "inject_reply",
+                "data": {"session_id": sid, "text": text, "simulate_typing": True, "by": "human"},
+            })
+    except Exception:
+        from loguru import logger as _lg
+        _lg.exception(f"send_session_message 推送/Mem0 失败 sid={sid}")
     return msg
 
 
@@ -840,8 +874,16 @@ async def transfer_session(
         raise HTTPException(404, "目标坐席不存在")
     if emp.org_id != sess.org_id:
         raise HTTPException(403, "目标坐席不属于本公司")
+    # 转接 = 转人工接管, 目标必须是真人坐席 (AI 坐席被 takeout 挡板挡住, 转给它会让会话静默)
+    if emp.is_ai:
+        raise HTTPException(400, "只能转接给真人坐席，不能转给 AI 坐席")
     sess.employee_id = emp.id
-    sess.status = "transferred"
+    # 转接 = 转给真人接管: 关闭 AI 自动回复, 记录接管人/时间。
+    # status 保持 active, 让接收坐席能通过 /agent-reply 正常发消息
+    # (transferred 状态会被 agent-reply 的 active 校验挡掉)。
+    sess.is_human_takeover = True
+    sess.human_takeover_at = datetime.utcnow()
+    sess.human_takeover_by = emp.id
     db.add(Message(
         session_id=sid,
         org_id=sess.org_id,
@@ -849,7 +891,7 @@ async def transfer_session(
         activity_id=sess.activity_id,
         sender_type="system",
         sender_id=user.id,
-        content=f"会话已转接至坐席 {emp.name} ({emp.id})",
+        content=f"会话已转接至坐席 {emp.name} ({emp.id})，AI 自动回复已关闭",
     ))
     await db.commit()
     return {"status": "ok"}
@@ -934,13 +976,16 @@ async def list_users(
     role: Optional[str] = Query(None),
     org_id: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_min_role("org_admin")),
+    user: User = Depends(require_min_role("group_admin")),
 ):
     stmt = select(User).order_by(desc(User.created_at))
-    if user.role != "platform_admin":
+    if user.role == "platform_admin":
+        if org_id:
+            stmt = stmt.where(User.org_id == org_id)
+    elif user.role == "org_admin":
         stmt = stmt.where(User.org_id == user.org_id)
-    elif org_id:
-        stmt = stmt.where(User.org_id == org_id)
+    else:  # group_admin: 只看本组的坐席账号
+        stmt = stmt.where(User.org_id == user.org_id).where(User.group_id == user.group_id).where(User.role == "agent")
     if role:
         stmt = stmt.where(User.role == role)
     res = await db.execute(stmt)
@@ -951,12 +996,26 @@ async def list_users(
 async def create_user(
     body: UserIn,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_min_role("org_admin")),
+    user: User = Depends(require_min_role("group_admin")),
 ):
     if user.role == "org_admin":
         if body.role == "platform_admin":
             raise HTTPException(403, "公司管理员不能创建平台管理员")
         body.org_id = user.org_id
+    elif user.role == "group_admin":
+        # 组管理员只能为本组创建坐席(agent)登录账号; 不能建更高角色或跨组/跨公司。
+        if body.role != "agent":
+            raise HTTPException(403, "组管理员只能创建坐席(agent)账号")
+        body.org_id = user.org_id
+        body.group_id = user.group_id
+        # 若绑定了坐席, 校验该坐席属于本组本公司
+        if body.employee_id:
+            emp_res = await db.execute(select(Employee).where(Employee.id == body.employee_id))
+            emp = emp_res.scalar_one_or_none()
+            if not emp:
+                raise HTTPException(404, "绑定的坐席不存在")
+            if emp.org_id != user.org_id or emp.group_id != user.group_id:
+                raise HTTPException(403, "只能绑定本组的坐席")
 
     # 唯一性校验
     dup = await db.execute(select(User).where(User.email == body.email))
@@ -985,7 +1044,7 @@ async def update_user(
     uid: str,
     body: UserPatchIn,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_min_role("org_admin")),
+    user: User = Depends(require_min_role("group_admin")),
 ):
     res = await db.execute(select(User).where(User.id == uid))
     obj = res.scalar_one_or_none()
@@ -995,6 +1054,14 @@ async def update_user(
         raise HTTPException(403, "禁止修改其他公司用户")
     if user.role == "org_admin" and body.role == "platform_admin":
         raise HTTPException(403, "无权升为平台超管")
+    if user.role == "group_admin":
+        # 组管理员只能管理本组的坐席(agent)账号, 且不能改角色/换组
+        if obj.role != "agent" or obj.group_id != user.group_id:
+            raise HTTPException(403, "组管理员只能管理本组坐席账号")
+        if body.role is not None and body.role != "agent":
+            raise HTTPException(403, "组管理员不能变更账号角色")
+        if body.group_id is not None and body.group_id != user.group_id:
+            raise HTTPException(403, "组管理员不能把账号转出本组")
 
     if body.display_name is not None:
         obj.display_name = body.display_name
@@ -1020,7 +1087,7 @@ async def update_user(
 async def delete_user(
     uid: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_min_role("org_admin")),
+    user: User = Depends(require_min_role("group_admin")),
 ):
     res = await db.execute(select(User).where(User.id == uid))
     obj = res.scalar_one_or_none()
@@ -1028,6 +1095,8 @@ async def delete_user(
         raise HTTPException(404, "用户不存在")
     if user.role != "platform_admin" and obj.org_id != user.org_id:
         raise HTTPException(403, "禁止删除其他公司用户")
+    if user.role == "group_admin" and (obj.role != "agent" or obj.group_id != user.group_id):
+        raise HTTPException(403, "组管理员只能删除本组坐席账号")
     if obj.id == user.id:
         raise HTTPException(400, "不能删除自己")
     await db.delete(obj)
@@ -1216,7 +1285,8 @@ async def agent_reply(
                     "data": {"session_id": sid, "text": text, "simulate_typing": True, "by": "human"},
                 })
             else:
-                payload = {"session_id": sid, "kind": content_type, "url": media_url, "by": "human"}
+                from config import to_public_url
+                payload = {"session_id": sid, "kind": content_type, "url": to_public_url(media_url), "by": "human"}
                 if media_caption:
                     payload["caption"] = media_caption
                 await visitor_manager.send_to_client(conn_id, {

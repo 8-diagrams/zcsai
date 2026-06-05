@@ -17,7 +17,9 @@ import '@vue-flow/controls/dist/style.css'
 
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -98,7 +100,7 @@ const reloadActivities = async () => {
   if (!orgId.value) { activities.value = []; return }
   const acts = await api.get(`/api/orgs/${orgId.value}/activities`)
   activities.value = [
-    { title: '★ 该公司所有活动通用 (留空)', value: null },
+    { title: t('ruleEditor.allActivitiesShared'), value: null },
     ...acts.map(a => ({ title: a.name, value: a.id })),
   ]
 }
@@ -148,7 +150,7 @@ function relayoutEdges() {
       nodes.value.push({
         id: GATE_ID, type: 'default',
         position: { x: 540, y: 200 },
-        data: { kind: 'gate', label: 'AND\n全部满足才执行' },
+        data: { kind: 'gate', label: t('ruleEditor.gateLabel') },
         deletable: false,
         selectable: false,
         style: {
@@ -194,7 +196,7 @@ const addCondition = () => {
   const idx = nodes.value.filter(n => n.data.kind === 'condition').length
   nodes.value.push({
     id, position: { x: 300, y: 80 + idx * 110 },
-    data: { kind: 'condition', label: '条件',
+    data: { kind: 'condition', label: t('ruleEditor.condition'),
       field: 'new_emotion', op: 'in', value: ['anger'] },
   })
   relayoutEdges()
@@ -205,7 +207,7 @@ const addAction = () => {
   const idx = nodes.value.filter(n => n.data.kind === 'action').length
   nodes.value.push({
     id, position: { x: 780, y: 80 + idx * 110 },
-    data: { kind: 'action', label: '动作', type: 'send_text', payload: { content: '' } },
+    data: { kind: 'action', label: t('ruleEditor.action'), type: 'send_text', payload: { content: '' } },
   })
   relayoutEdges()
 }
@@ -276,7 +278,7 @@ function deserialize(rule) {
     const id = newId()
     nodes.value.push({
       id, position: { x: 300, y: 80 + i * 110 },
-      data: { kind: 'condition', label: '条件',
+      data: { kind: 'condition', label: t('ruleEditor.condition'),
         field: c.field, op: c.op, value: c.value },
     })
   })
@@ -285,7 +287,7 @@ function deserialize(rule) {
     const { type, ...rest } = a
     nodes.value.push({
       id, position: { x: 780, y: 80 + i * 110 },
-      data: { kind: 'action', label: '动作', type, payload: rest },
+      data: { kind: 'action', label: t('ruleEditor.action'), type, payload: rest },
     })
   })
   relayoutEdges()
@@ -318,7 +320,7 @@ const onDryRun = async () => {
   errMsg.value = ''
   let ctxObj
   try { ctxObj = JSON.parse(dryRunCtx.value) }
-  catch { errMsg.value = '上下文 JSON 不合法'; return }
+  catch { errMsg.value = t('ruleEditor.invalidCtxJson'); return }
   try {
     const r = await api.post(`/api/orgs/${orgId.value}/event-rules/dry-run`, {
       conditions: serialize().conditions,
@@ -372,36 +374,36 @@ onMounted(async () => {
 })
 
 // ----- Action 类型字段表 (按 type 显示不同输入) -------------------------
-const actionFieldsByType = {
-  send_text: [{ key: 'content', label: '文本', type: 'textarea' }],
-  send_link: [{ key: 'url', label: 'URL' }, { key: 'label', label: '按钮文案' }],
-  send_image: [{ key: 'url', label: '图片 URL' }, { key: 'caption', label: '图说' }],
-  send_video: [{ key: 'url', label: '视频 URL' }, { key: 'caption', label: '说明' }],
+const actionFieldsByType = computed(() => ({
+  send_text: [{ key: 'content', label: t('ruleEditor.af.text'), type: 'textarea' }],
+  send_link: [{ key: 'url', label: 'URL' }, { key: 'label', label: t('ruleEditor.af.buttonText') }],
+  send_image: [{ key: 'url', label: t('ruleEditor.af.imageUrl') }, { key: 'caption', label: t('ruleEditor.af.imageCaption') }],
+  send_video: [{ key: 'url', label: t('ruleEditor.af.videoUrl') }, { key: 'caption', label: t('ruleEditor.af.caption') }],
   send_payment_link: [
-    { key: 'url', label: '支付链接' },
-    { key: 'amount', label: '金额', type: 'number' },
-    { key: 'currency', label: '币种' },
+    { key: 'url', label: t('ruleEditor.af.paymentLink') },
+    { key: 'amount', label: t('ruleEditor.af.amount'), type: 'number' },
+    { key: 'currency', label: t('ruleEditor.af.currency') },
   ],
-  send_material: [{ key: 'material_id', label: '素材 ID(暂未启用)' }],
+  send_material: [{ key: 'material_id', label: t('ruleEditor.af.materialId') }],
   transfer_to_human: [
-    { key: 'target_employee_id', label: '指定员工 ID(可空 = 同组广播)' },
-    { key: 'target_group_id', label: '指定组 ID(可空 = 沿用 session.group)' },
-    { key: 'reason', label: '原因' },
+    { key: 'target_employee_id', label: t('ruleEditor.af.targetEmployee') },
+    { key: 'target_group_id', label: t('ruleEditor.af.targetGroup') },
+    { key: 'reason', label: t('ruleEditor.af.reason') },
   ],
   system_notify: [
-    { key: 'level', label: '级别(info/warning/urgent)' },
-    { key: 'title', label: '标题' },
-    { key: 'body', label: '内容', type: 'textarea' },
-    { key: 'target_employee_id', label: '收件员工(可空)' },
+    { key: 'level', label: t('ruleEditor.af.level') },
+    { key: 'title', label: t('ruleEditor.af.notifyTitle') },
+    { key: 'body', label: t('ruleEditor.af.content'), type: 'textarea' },
+    { key: 'target_employee_id', label: t('ruleEditor.af.recipientEmployee') },
   ],
   webhook: [
     { key: 'url', label: 'Webhook URL' },
     { key: 'method', label: 'HTTP Method (GET/POST/PUT)' },
   ],
-  override_reply: [{ key: 'content', label: '覆盖文本', type: 'textarea' }],
+  override_reply: [{ key: 'content', label: t('ruleEditor.af.overrideText'), type: 'textarea' }],
   block_llm: [],
-  set_tag: [{ key: 'tag', label: '标签(暂未启用)' }],
-}
+  set_tag: [{ key: 'tag', label: t('ruleEditor.af.tag') }],
+}))
 
 const valueAsString = computed({
   get: () => {
@@ -491,7 +493,7 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
   <div>
     <VCard v-if="auth.isPlatformAdmin" class="mb-4">
       <VCardText class="d-flex align-center" style="gap:12px">
-        <span class="text-body-2">公司:</span>
+        <span class="text-body-2">{{ t('common.company') }}:</span>
         <VSelect v-model="orgId" :items="orgOptions" density="compact" hide-details style="max-width: 360px" />
       </VCardText>
     </VCard>
@@ -499,13 +501,13 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
       <VCardText>
         <VRow dense>
           <VCol cols="12" md="4">
-            <VTextField v-model="ruleForm.name" label="规则名称" density="compact" />
+            <VTextField v-model="ruleForm.name" :label="t('ruleEditor.ruleName')" density="compact" />
           </VCol>
           <VCol cols="12" md="3">
             <VSelect
               v-model="ruleForm.activity_id"
               :items="activities"
-              label="适用活动 (可选某个 activity, 也可全公司通用)"
+              :label="t('ruleEditor.applyActivity')"
               density="compact"
               clearable
               :disabled="!activities.length"
@@ -514,21 +516,21 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
           <VCol cols="6" md="2">
             <VSelect v-model="ruleForm.phase" :items="toItems(meta.phases)"
                      item-title="title" item-value="value"
-                     label="阶段" density="compact" />
+                     :label="t('rules.phase')" density="compact" />
           </VCol>
           <VCol cols="6" md="1">
-            <VTextField v-model.number="ruleForm.priority" label="优先级" type="number" density="compact" />
+            <VTextField v-model.number="ruleForm.priority" :label="t('rules.priority')" type="number" density="compact" />
           </VCol>
           <VCol cols="6" md="2">
             <VSelect v-model="ruleForm.fire_policy" :items="toItems(meta.fire_policies)"
                      item-title="title" item-value="value"
-                     label="触发频率" density="compact" />
+                     :label="t('ruleEditor.firePolicy')" density="compact" />
           </VCol>
           <VCol cols="6" md="2">
-            <VSwitch v-model="ruleForm.short_circuit" label="命中后短路" inset density="compact" hide-details />
+            <VSwitch v-model="ruleForm.short_circuit" :label="t('ruleEditor.shortCircuit')" inset density="compact" hide-details />
           </VCol>
           <VCol cols="6" md="2">
-            <VSwitch v-model="ruleForm.is_active" label="启用" inset density="compact" color="primary" hide-details />
+            <VSwitch v-model="ruleForm.is_active" :label="t('rules.enabled')" inset density="compact" color="primary" hide-details />
           </VCol>
         </VRow>
         <VAlert v-if="errMsg" type="error" density="compact" class="mt-2">{{ errMsg }}</VAlert>
@@ -537,13 +539,13 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
 
     <VCard>
       <VCardText class="d-flex align-center" style="gap:12px">
-        <VBtn size="small" prepend-icon="ri-add-line" variant="tonal" @click="addCondition">加条件</VBtn>
-        <VBtn size="small" prepend-icon="ri-add-line" variant="tonal" color="primary" @click="addAction">加动作</VBtn>
+        <VBtn size="small" prepend-icon="ri-add-line" variant="tonal" @click="addCondition">{{ t('ruleEditor.addCondition') }}</VBtn>
+        <VBtn size="small" prepend-icon="ri-add-line" variant="tonal" color="primary" @click="addAction">{{ t('ruleEditor.addAction') }}</VBtn>
         <VBtn v-if="selectedId && selectedId !== TRIGGER_ID" size="small" color="error" variant="text"
-              prepend-icon="ri-delete-bin-line" @click="removeSelected">删除选中</VBtn>
+              prepend-icon="ri-delete-bin-line" @click="removeSelected">{{ t('ruleEditor.deleteSelected') }}</VBtn>
         <VSpacer />
-        <VBtn size="small" variant="text" prepend-icon="ri-test-tube-line" @click="dryRunDialog = true">干跑预览</VBtn>
-        <VBtn size="small" color="primary" prepend-icon="ri-save-line" @click="onSave">保存</VBtn>
+        <VBtn size="small" variant="text" prepend-icon="ri-test-tube-line" @click="dryRunDialog = true">{{ t('ruleEditor.dryRunPreview') }}</VBtn>
+        <VBtn size="small" color="primary" prepend-icon="ri-save-line" @click="onSave">{{ t('general.save') }}</VBtn>
       </VCardText>
 
       <div class="vue-flow-host">
@@ -571,7 +573,7 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
 
         <!-- Condition -->
         <template v-if="selectedNode.data.kind === 'condition'">
-          <div class="field-label">字段</div>
+          <div class="field-label">{{ t('ruleEditor.field') }}</div>
           <VSelect v-model="selectedNode.data.field" :items="toItems(meta.fields)"
                    item-title="title" item-value="value"
                    variant="outlined" density="compact" hide-details class="mb-3" />
@@ -579,14 +581,14 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
             {{ currentFieldHint }}
           </div>
 
-          <div class="field-label">操作符</div>
+          <div class="field-label">{{ t('ruleEditor.operator') }}</div>
           <VSelect v-model="selectedNode.data.op" :items="toItems(meta.ops)"
                    item-title="title" item-value="value"
                    variant="outlined" density="compact" hide-details class="mb-3" />
 
           <!-- 情绪类字段 -->
           <template v-if="meta.emotion_like_fields.includes(selectedNode.data.field)">
-            <div class="field-label">值</div>
+            <div class="field-label">{{ t('ruleEditor.value') }}</div>
             <VSelect
               v-if="['in','not_in'].includes(selectedNode.data.op)"
               v-model="selectedNode.data.value"
@@ -606,7 +608,7 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
 
           <!-- Stage 类字段: new_stage / prev_stage / stage_flipped_to -->
           <template v-else-if="meta.stage_like_fields.includes(selectedNode.data.field)">
-            <div class="field-label">值 (SOP 阶段)</div>
+            <div class="field-label">{{ t('ruleEditor.valueStage') }}</div>
             <VSelect
               v-if="['in','not_in'].includes(selectedNode.data.op)"
               v-model="selectedNode.data.value"
@@ -626,10 +628,10 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
 
           <!-- Boolean 类字段: stage_flipped / emotion_degraded -->
           <template v-else-if="meta.boolean_like_fields.includes(selectedNode.data.field)">
-            <div class="field-label">值 (布尔)</div>
+            <div class="field-label">{{ t('ruleEditor.valueBool') }}</div>
             <VSelect
               v-model="selectedNode.data.value"
-              :items="[{title:'是 (true)', value:true},{title:'否 (false)', value:false}]"
+              :items="[{title: t('ruleEditor.boolTrue'), value:true},{title: t('ruleEditor.boolFalse'), value:false}]"
               item-title="title" item-value="value"
               variant="outlined" density="compact" hide-details
             />
@@ -638,9 +640,9 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
           <!-- 数值类 / 字符串类: 自由输入 -->
           <template v-else>
             <div class="field-label">
-              值
-              <span v-if="['in','not_in'].includes(selectedNode.data.op)">(多个用逗号分隔)</span>
-              <span v-else-if="['gte','gt','lte','lt'].includes(selectedNode.data.op)">(数字)</span>
+              {{ t('ruleEditor.value') }}
+              <span v-if="['in','not_in'].includes(selectedNode.data.op)">{{ t('ruleEditor.commaSeparated') }}</span>
+              <span v-else-if="['gte','gt','lte','lt'].includes(selectedNode.data.op)">{{ t('ruleEditor.numberHint') }}</span>
             </div>
             <VTextField
               v-model="valueAsString"
@@ -651,7 +653,7 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
 
         <!-- Action -->
         <template v-if="selectedNode.data.kind === 'action'">
-          <div class="field-label">动作类型</div>
+          <div class="field-label">{{ t('ruleEditor.actionType') }}</div>
           <VSelect v-model="selectedNode.data.type" :items="toItems(meta.action_types)"
                    item-title="title" item-value="value"
                    variant="outlined" density="compact" hide-details class="mb-3" />
@@ -673,17 +675,17 @@ watch(() => selectedNode.value && selectedNode.value.data.field, (newField) => {
     <!-- 干跑对话框 -->
     <VDialog v-model="dryRunDialog" max-width="640">
       <VCard>
-        <VCardItem><VCardTitle>干跑: 模拟一个 ctx 看会不会命中</VCardTitle></VCardItem>
+        <VCardItem><VCardTitle>{{ t('ruleEditor.dryRunTitle') }}</VCardTitle></VCardItem>
         <VCardText>
-          <VTextarea v-model="dryRunCtx" label="模拟上下文 (JSON)" rows="8" style="font-family:monospace" />
+          <VTextarea v-model="dryRunCtx" :label="t('ruleEditor.simulatedCtx')" rows="8" style="font-family:monospace" />
           <VAlert v-if="dryRunResult" :type="dryRunResult.matched ? 'success' : 'info'" class="mt-3" density="compact">
-            {{ dryRunResult.matched ? '✅ 会命中' : '❌ 不会命中' }}
+            {{ dryRunResult.matched ? t('ruleEditor.willMatch') : t('ruleEditor.willNotMatch') }}
           </VAlert>
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn variant="text" @click="dryRunDialog = false">关闭</VBtn>
-          <VBtn color="primary" @click="onDryRun">运行</VBtn>
+          <VBtn variant="text" @click="dryRunDialog = false">{{ t('general.close') }}</VBtn>
+          <VBtn color="primary" @click="onDryRun">{{ t('ruleEditor.run') }}</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

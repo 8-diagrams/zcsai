@@ -531,9 +531,14 @@ async def _dispatch_one(
                     rule_id=rule.id,
                     payload=payload,
                 )
+                # WS 下发: url 拼成绝对地址 (访客 widget 跨域可直接打开); 落库仍存相对路径
+                from config import to_public_url
+                ws_payload = {**payload}
+                if ws_payload.get("url"):
+                    ws_payload["url"] = to_public_url(ws_payload["url"])
                 await visitor_manager.send_to_client(visitor_conn_id, {
                     "action": "inject_media",
-                    "data": {"session_id": sess.id, **payload,
+                    "data": {"session_id": sess.id, **ws_payload,
                              "fired_by_rule_id": rule.id},
                 })
                 action_results.append({"type": atype, "ok": True})

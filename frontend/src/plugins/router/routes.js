@@ -29,7 +29,7 @@ export const routes = [
       {
         path: 'admin/users',
         component: () => import('@/pages/admin/Users.vue'),
-        meta: { roles: ['platform_admin', 'org_admin'] },
+        meta: { roles: ['platform_admin', 'org_admin', 'group_admin'] },
       },
 
       // 公司管理员

@@ -4,7 +4,9 @@ import { useRouter } from 'vue-router'
 import CrudTable from '@/components/CrudTable.vue'
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const router = useRouter()
 const auth = useAuthStore()
 const orgId = ref(auth.orgId)
@@ -16,7 +18,7 @@ const loadActivities = async () => {
   if (!orgId.value) return
   const acts = await api.get(`/api/orgs/${orgId.value}/activities`)
   activityOptions.value = [
-    { title: '(全部 activity 共用)', value: null },
+    { title: t('rules.allActivitiesShared'), value: null },
     ...acts.map(a => ({ title: a.name, value: a.id })),
   ]
 }
@@ -38,16 +40,16 @@ watch(orgId, async () => {
   ready.value = true
 })
 
-const headers = [
+const headers = computed(() => [
   { title: 'ID', key: 'id', sortable: false },
-  { title: '名称', key: 'name' },
-  { title: '阶段', key: 'phase' },
-  { title: '适用 activity', key: 'activity_id' },
-  { title: '优先级', key: 'priority' },
+  { title: t('rules.name'), key: 'name' },
+  { title: t('rules.phase'), key: 'phase' },
+  { title: t('rules.applyActivity'), key: 'activity_id' },
+  { title: t('rules.priority'), key: 'priority' },
   { title: 'fire_policy', key: 'fire_policy' },
-  { title: '启用', key: 'is_active_switch', sortable: false },
-  { title: '操作', key: 'go_edit', sortable: false },
-]
+  { title: t('rules.enabled'), key: 'is_active_switch', sortable: false },
+  { title: t('crud.actions'), key: 'go_edit', sortable: false },
+])
 
 const tableRef = ref(null)
 const refreshList = async () => {
@@ -70,16 +72,16 @@ const goEdit = (id) => {
   <div>
     <VCard v-if="auth.isPlatformAdmin" class="mb-4">
       <VCardText class="d-flex align-center" style="gap:12px">
-        <span class="text-body-2">公司:</span>
+        <span class="text-body-2">{{ t('common.company') }}:</span>
         <VSelect v-model="orgId" :items="orgOptions" density="compact" hide-details style="max-width: 360px" />
       </VCardText>
     </VCard>
 
     <VCard class="mb-4">
       <VCardText class="d-flex align-center" style="gap:12px">
-        <h3 class="text-h6 me-auto">事件规则</h3>
+        <h3 class="text-h6 me-auto">{{ t('rules.title') }}</h3>
         <VBtn color="primary" prepend-icon="ri-add-line" @click="goEdit(null)">
-          新建规则
+          {{ t('rules.createRule') }}
         </VBtn>
       </VCardText>
     </VCard>
@@ -110,7 +112,7 @@ const goEdit = (id) => {
       </template>
       <template #cell.go_edit="{ item }">
         <VBtn size="small" variant="text" prepend-icon="ri-edit-line" @click="goEdit(item.id)">
-          编辑
+          {{ t('general.edit') }}
         </VBtn>
       </template>
     </CrudTable>

@@ -1,23 +1,26 @@
 <script setup>
 import CrudTable from '@/components/CrudTable.vue'
 import { api } from '@/utils/api'
+import { useI18n } from 'vue-i18n'
 
-const headers = [
+const { t } = useI18n()
+
+const headers = computed(() => [
   { title: 'ID', key: 'id' },
-  { title: '代理商名称', key: 'name' },
-  { title: '分佣比例', key: 'commission_rate' },
-  { title: '创建时间', key: 'created_at' },
-]
+  { title: t('referrers.name'), key: 'name' },
+  { title: t('referrers.commissionRate'), key: 'commission_rate' },
+  { title: t('common.createdAt'), key: 'created_at' },
+])
 
-const formFields = [
-  { key: 'name', label: '代理商名称', required: true },
-  { key: 'commission_rate', label: '分佣比例 (0~1)', type: 'number' },
-]
+const formFields = computed(() => [
+  { key: 'name', label: t('referrers.name'), required: true },
+  { key: 'commission_rate', label: t('referrers.commissionRateLabel'), type: 'number' },
+])
 </script>
 
 <template>
   <CrudTable
-    title="代理商"
+    :title="t('nav.referrers')"
     :headers="headers"
     :form-fields="formFields"
     :default-form="{ name: '', commission_rate: 0 }"

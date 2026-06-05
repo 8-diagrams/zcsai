@@ -3,7 +3,9 @@ import { useRouter } from 'vue-router'
 import CrudTable from '@/components/CrudTable.vue'
 import { api, ApiError } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const router = useRouter()
 const auth = useAuthStore()
 const orgId = ref(auth.orgId)
@@ -34,21 +36,21 @@ watch(orgId, async () => {
   ready.value = true
 })
 
-const headers = [
+const headers = computed(() => [
   { title: 'ID', key: 'id' },
-  { title: '活动名称', key: 'name' },
-  { title: '组', key: 'group_id' },
-  { title: '阶段数', key: 'stages_count' },
-  { title: '创建时间', key: 'created_at' },
-]
+  { title: t('activities.name'), key: 'name' },
+  { title: t('common.group'), key: 'group_id' },
+  { title: t('activities.stagesCount'), key: 'stages_count' },
+  { title: t('common.createdAt'), key: 'created_at' },
+])
 
 const formFields = computed(() => [
-  { key: 'name', label: '活动名称', required: true },
-  { key: 'group_id', label: '执行组', type: 'select', options: groupOptions.value, required: true },
-  { key: 'welcome_message', label: '进线欢迎语', type: 'textarea', rows: 2 },
-  { key: 'closing_message', label: '结束语', type: 'textarea', rows: 2 },
-  { key: 'global_guideline', label: '全局基础指引', type: 'textarea', rows: 3 },
-  { key: 'stages_json', label: '阶段配置 (JSON: {"破冰":"...","探求":"..."})', type: 'textarea', rows: 8 },
+  { key: 'name', label: t('activities.name'), required: true },
+  { key: 'group_id', label: t('activities.execGroup'), type: 'select', options: groupOptions.value, required: true },
+  { key: 'welcome_message', label: t('activities.welcomeMessage'), type: 'textarea', rows: 2 },
+  { key: 'closing_message', label: t('activities.closingMessage'), type: 'textarea', rows: 2 },
+  { key: 'global_guideline', label: t('activities.globalGuideline'), type: 'textarea', rows: 3 },
+  { key: 'stages_json', label: t('activities.stagesConfig'), type: 'textarea', rows: 8 },
 ])
 
 const detailDialog = ref(false)
@@ -76,7 +78,7 @@ const openDetail = async (item) => {
 
 const submitMount = async () => {
   if (!mountForm.value.kb_id) {
-    mountErr.value = '请选择知识库'
+    mountErr.value = t('activities.pleaseSelectKb')
     return
   }
   try {
@@ -94,7 +96,7 @@ const submitMount = async () => {
 }
 
 const unmount = async (kbId) => {
-  if (!confirm('确定卸载该知识库?')) return
+  if (!confirm(t('activities.confirmUnmount'))) return
   try {
     await api.delete(`/api/activities/${currentActivity.value.id}/kb-mounts/${kbId}`)
     kbMounts.value = await api.get(`/api/activities/${currentActivity.value.id}/kb-mounts`)
@@ -107,7 +109,7 @@ const unmount = async (kbId) => {
 const beforeSave = (body) => {
   const out = { ...body }
   if (out.stages_json) {
-    try { out.stages_config = JSON.parse(out.stages_json) } catch { throw new ApiError(0, '阶段配置 JSON 不合法', null) }
+    try { out.stages_config = JSON.parse(out.stages_json) } catch { throw new ApiError(0, t('activities.invalidStagesJson'), null) }
   } else {
     out.stages_config = null
   }
@@ -120,18 +122,18 @@ const beforeSave = (body) => {
   <div>
     <VCard v-if="auth.isPlatformAdmin" class="mb-4">
       <VCardText class="d-flex align-center" style="gap:12px">
-        <span class="text-body-2">公司:</span>
+        <span class="text-body-2">{{ t('common.company') }}:</span>
         <VSelect v-model="orgId" :items="orgOptions" density="compact" hide-details style="max-width: 360px" />
         <VSpacer />
         <VBtn variant="tonal" prepend-icon="ri-flow-chart" @click="router.push('/org/event-rules')">
-          管理事件规则
+          {{ t('activities.manageRules') }}
         </VBtn>
       </VCardText>
     </VCard>
     <VCard v-else class="mb-4">
       <VCardText class="d-flex align-center justify-end">
         <VBtn variant="tonal" prepend-icon="ri-flow-chart" @click="router.push('/org/event-rules')">
-          管理事件规则
+          {{ t('activities.manageRules') }}
         </VBtn>
       </VCardText>
     </VCard>
@@ -139,7 +141,7 @@ const beforeSave = (body) => {
     <CrudTable
       v-if="ready"
       :key="orgId"
-      title="活动剧本"
+      :title="t('nav.activities')"
       :headers="headers"
       :form-fields="formFields"
       :default-form="{ name: '', group_id: null, welcome_message: '', closing_message: '', global_guideline: '', stages_json: '' }"
@@ -160,12 +162,12 @@ const beforeSave = (body) => {
     <VDialog v-model="detailDialog" max-width="720">
       <VCard v-if="currentActivity">
         <VCardItem>
-          <VCardTitle>挂载知识库 — {{ currentActivity.name }}</VCardTitle>
+          <VCardTitle>{{ t('activities.mountKbTitle', { name: currentActivity.name }) }}</VCardTitle>
         </VCardItem>
         <VCardText>
           <VTable density="compact">
             <thead>
-              <tr><th>知识库</th><th>优先级</th><th>挂载指引</th><th></th></tr>
+              <tr><th>{{ t('nav.kbs') }}</th><th>{{ t('activities.priority') }}</th><th>{{ t('activities.mountGuideline') }}</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="m in kbMounts" :key="m.kb_id">
@@ -176,34 +178,34 @@ const beforeSave = (body) => {
                   <VBtn icon="ri-delete-bin-line" size="small" variant="text" color="error" @click="unmount(m.kb_id)" />
                 </td>
               </tr>
-              <tr v-if="!kbMounts.length"><td colspan="4" class="text-center text-medium-emphasis">尚未挂载</td></tr>
+              <tr v-if="!kbMounts.length"><td colspan="4" class="text-center text-medium-emphasis">{{ t('activities.noMounts') }}</td></tr>
             </tbody>
           </VTable>
 
           <VDivider class="my-4" />
-          <h4 class="mb-2">挂载新的知识库</h4>
+          <h4 class="mb-2">{{ t('activities.mountNewKb') }}</h4>
           <VRow dense>
             <VCol cols="12" md="5">
               <VSelect
                 v-model="mountForm.kb_id"
                 :items="allKbs.map(k => ({ title: k.name, value: k.id }))"
-                label="选择知识库"
+                :label="t('activities.selectKb')"
                 density="compact"
               />
             </VCol>
             <VCol cols="6" md="3">
-              <VTextField v-model.number="mountForm.priority" type="number" label="优先级" density="compact" />
+              <VTextField v-model.number="mountForm.priority" type="number" :label="t('activities.priority')" density="compact" />
             </VCol>
             <VCol cols="12">
-              <VTextarea v-model="mountForm.mount_guideline" label="挂载专属指引 (可选)" rows="2" auto-grow />
+              <VTextarea v-model="mountForm.mount_guideline" :label="t('activities.mountGuidelineOptional')" rows="2" auto-grow />
             </VCol>
           </VRow>
           <VAlert v-if="mountErr" type="error" density="compact" class="mt-2">{{ mountErr }}</VAlert>
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn variant="text" @click="detailDialog = false">关闭</VBtn>
-          <VBtn color="primary" @click="submitMount">挂载</VBtn>
+          <VBtn variant="text" @click="detailDialog = false">{{ t('general.close') }}</VBtn>
+          <VBtn color="primary" @click="submitMount">{{ t('activities.mount') }}</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

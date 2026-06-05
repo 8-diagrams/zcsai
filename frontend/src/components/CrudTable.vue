@@ -27,6 +27,10 @@ const props = defineProps({
   search: { type: Boolean, default: true },
 })
 
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 const emit = defineEmits(['row-click'])
 
 const rows = ref([])
@@ -50,7 +54,7 @@ const finalHeaders = computed(() => {
   if (props.readonly) return props.headers
   if (!props.updateFn && !props.deleteFn) return props.headers
   if (props.headers.some(h => h.key === 'actions')) return props.headers
-  return [...props.headers, { title: '操作', key: 'actions', sortable: false, width: 160 }]
+  return [...props.headers, { title: t('crud.actions'), key: 'actions', sortable: false, width: 160 }]
 })
 
 const reload = async () => {
@@ -58,7 +62,7 @@ const reload = async () => {
   try {
     rows.value = await props.fetchFn()
   } catch (e) {
-    errorMsg.value = e.detail || e.message || '加载失败'
+    errorMsg.value = e.detail || e.message || t('crud.loadFailed')
   } finally {
     loading.value = false
   }
@@ -95,19 +99,19 @@ const submit = async () => {
     drawer.value = false
     await reload()
   } catch (e) {
-    errorMsg.value = e.detail || e.message || '保存失败'
+    errorMsg.value = e.detail || e.message || t('crud.saveFailed')
   } finally {
     submitting.value = false
   }
 }
 
 const handleDelete = async (row) => {
-  if (!confirm(`确定删除 "${row.name || row.email || row[props.itemKey]}" 吗?`)) return
+  if (!confirm(t('crud.confirmDelete', { name: row.name || row.email || row[props.itemKey] }))) return
   try {
     await props.deleteFn(row[props.itemKey])
     await reload()
   } catch (e) {
-    alert(e.detail || e.message || '删除失败')
+    alert(e.detail || e.message || t('crud.deleteFailed'))
   }
 }
 
@@ -130,7 +134,7 @@ onMounted(reload)
             v-model="keyword"
             density="compact"
             hide-details
-            placeholder="搜索..."
+            :placeholder="t('crud.searchPlaceholder')"
             prepend-inner-icon="ri-search-line"
             style="max-width: 240px;"
           />
@@ -140,7 +144,7 @@ onMounted(reload)
             prepend-icon="ri-add-line"
             @click="openCreate"
           >
-            新建
+            {{ t('crud.create') }}
           </VBtn>
           <VBtn
             icon="ri-refresh-line"
@@ -204,7 +208,7 @@ onMounted(reload)
   >
     <VCard flat class="h-100 d-flex flex-column">
       <VCardItem>
-        <VCardTitle>{{ editing ? '编辑' : '新建' }}{{ title }}</VCardTitle>
+        <VCardTitle>{{ editing ? t('crud.edit') : t('crud.create') }}{{ title }}</VCardTitle>
         <template #append>
           <VBtn icon="ri-close-line" variant="text" @click="drawer = false" />
         </template>
@@ -273,13 +277,13 @@ onMounted(reload)
       <VDivider />
       <VCardActions class="pa-4">
         <VSpacer />
-        <VBtn variant="text" @click="drawer = false">取消</VBtn>
+        <VBtn variant="text" @click="drawer = false">{{ t('general.cancel') }}</VBtn>
         <VBtn
           color="primary"
           :loading="submitting"
           @click="submit"
         >
-          保存
+          {{ t('general.save') }}
         </VBtn>
       </VCardActions>
     </VCard>

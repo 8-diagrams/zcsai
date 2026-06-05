@@ -2,7 +2,9 @@
 import CrudTable from '@/components/CrudTable.vue'
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const orgId = ref(auth.orgId)
 const orgOptions = ref([])
@@ -17,22 +19,22 @@ onMounted(async () => {
   }
 })
 
-const headers = [
+const headers = computed(() => [
   { title: 'ID', key: 'id' },
-  { title: '组名', key: 'name' },
-  { title: '创建时间', key: 'created_at' },
-]
+  { title: t('groups.name'), key: 'name' },
+  { title: t('common.createdAt'), key: 'created_at' },
+])
 
-const formFields = [
-  { key: 'name', label: '组名', required: true },
-]
+const formFields = computed(() => [
+  { key: 'name', label: t('groups.name'), required: true },
+])
 </script>
 
 <template>
   <div>
     <VCard v-if="auth.isPlatformAdmin" class="mb-4">
       <VCardText class="d-flex align-center" style="gap:12px">
-        <span class="text-body-2">选择公司:</span>
+        <span class="text-body-2">{{ t('common.selectCompany') }}:</span>
         <VSelect
           v-model="orgId"
           :items="orgOptions"
@@ -47,7 +49,7 @@ const formFields = [
     <CrudTable
       v-if="ready"
       :key="orgId"
-      title="组管理"
+      :title="t('nav.groups')"
       :headers="headers"
       :form-fields="formFields"
       :default-form="{ name: '' }"
@@ -56,6 +58,6 @@ const formFields = [
       :update-fn="(id, body) => api.patch(`/api/orgs/${orgId}/groups/${id}`, body)"
       :delete-fn="id => api.delete(`/api/orgs/${orgId}/groups/${id}`)"
     />
-    <VAlert v-else type="info">请先选择公司</VAlert>
+    <VAlert v-else type="info">{{ t('common.pleaseSelectCompany') }}</VAlert>
   </div>
 </template>

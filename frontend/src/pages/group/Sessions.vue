@@ -1,15 +1,17 @@
 <script setup>
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const auth = useAuthStore()
-const activityOptions = ref([{ title: '全部活动', value: null }])
-const statusOptions = [
-  { title: '全部状态', value: null },
+const activityOptions = ref([{ title: t('sessions.allActivities'), value: null }])
+const statusOptions = computed(() => [
+  { title: t('sessions.allStatus'), value: null },
   { title: 'active', value: 'active' },
   { title: 'closed', value: 'closed' },
   { title: 'transferred', value: 'transferred' },
-]
+])
 
 const filters = ref({ activity_id: null, status: 'active' })
 const sessions = ref([])
@@ -18,13 +20,29 @@ const selected = ref(null)
 const messages = ref([])
 const msgLoading = ref(false)
 const stagesByActivity = ref({})
+const employees = ref([])
 
 const loadOptions = async () => {
   if (!auth.orgId || !auth.groupId) return
-  const acts = await api.get(`/api/orgs/${auth.orgId}/activities?group_id=${auth.groupId}`)
-  activityOptions.value = [{ title: '全部活动', value: null }, ...acts.map(a => ({ title: a.name, value: a.id }))]
+  const [acts, emps] = await Promise.all([
+    api.get(`/api/orgs/${auth.orgId}/activities?group_id=${auth.groupId}`),
+    api.get(`/api/orgs/${auth.orgId}/employees?group_id=${auth.groupId}`),
+  ])
+  activityOptions.value = [{ title: t('sessions.allActivities'), value: null }, ...acts.map(a => ({ title: a.name, value: a.id }))]
   stagesByActivity.value = Object.fromEntries(acts.map(a => [a.id, a.stages_config || {}]))
+  employees.value = emps
 }
+
+// 转接目标可选项: 仅组内真人坐席 (转接=转人工接管, AI 坐席无意义), 排除会话当前坐席
+const transferOptions = computed(() =>
+  employees.value
+    .filter(e => !e.is_ai)
+    .filter(e => !selected.value || e.id !== selected.value.employee_id)
+    .map(e => ({
+      title: `${e.name} · ${e.status}`,
+      value: e.id,
+    })),
+)
 
 const reload = async () => {
   if (!auth.orgId || !auth.groupId) return
@@ -38,22 +56,42 @@ const reload = async () => {
   } finally { loading.value = false }
 }
 
-const loadMessages = async (s) => {
+// silent=true 用于定时轮询: 不显示 spinner、内容无变化不重赋值, 避免每 5 秒闪烁/跳动
+const loadMessages = async (s, { silent = false } = {}) => {
   selected.value = s
-  msgLoading.value = true
-  try { messages.value = await api.get(`/api/sessions/${s.id}/messages`) }
-  finally { msgLoading.value = false }
+  if (!silent) msgLoading.value = true
+  try {
+    const newMsgs = await api.get(`/api/sessions/${s.id}/messages`)
+    const prev = messages.value
+    const changed = newMsgs.length !== prev.length || newMsgs.at(-1)?.id !== prev.at(-1)?.id
+    if (changed) messages.value = newMsgs
+  } finally { if (!silent) msgLoading.value = false }
 }
 
-const transfer = async () => {
+const transferDialog = ref(false)
+const transferTarget = ref(null)
+const transferErr = ref('')
+const transferring = ref(false)
+
+const openTransfer = () => {
   if (!selected.value) return
-  const target = prompt('转接到目标坐席 ID(可填 AI 坐席 ID):')
-  if (!target) return
+  transferTarget.value = null
+  transferErr.value = ''
+  transferDialog.value = true
+}
+
+const submitTransfer = async () => {
+  if (!selected.value || !transferTarget.value) return
+  transferring.value = true
+  transferErr.value = ''
   try {
-    await api.post(`/api/sessions/${selected.value.id}/transfer`, { target_employee_id: target.trim() })
+    await api.post(`/api/sessions/${selected.value.id}/transfer`, { target_employee_id: transferTarget.value })
+    transferDialog.value = false
     await reload()
     await loadMessages(sessions.value.find(s => s.id === selected.value.id) || selected.value)
-  } catch (e) { alert(e.detail || e.message) }
+  } catch (e) {
+    transferErr.value = e.detail || e.message
+  } finally { transferring.value = false }
 }
 
 let timer = null
@@ -63,7 +101,7 @@ onMounted(async () => {
   timer = setInterval(() => {
     if (filters.value.status === 'active') {
       reload()
-      if (selected.value) loadMessages(selected.value)
+      if (selected.value) loadMessages(selected.value, { silent: true })
     }
   }, 5000)
 })
@@ -81,15 +119,11 @@ const senderLabel = (m) => {
   }
   return m.sender_id || ''
 }
-const EMOTION_META = {
-  calm:       { label: '平静', color: 'default' },
-  joy:        { label: '喜悦', color: 'success' },
-  excited:    { label: '兴奋', color: 'success' },
-  hesitation: { label: '犹豫', color: 'info' },
-  impatience: { label: '急躁', color: 'warning' },
-  anger:      { label: '愤怒', color: 'error' },
+const EMOTION_COLOR = {
+  calm: 'default', joy: 'success', excited: 'success',
+  hesitation: 'info', impatience: 'warning', anger: 'error',
 }
-const emotionMeta = (e) => EMOTION_META[e] || null
+const emotionMeta = (e) => e && EMOTION_COLOR[e] ? { label: t(`session.emotion.${e}`), color: EMOTION_COLOR[e] } : null
 const stageLabel = (code) => {
   if (!code) return ''
   const aid = selected.value?.activity_id
@@ -101,15 +135,15 @@ const stageLabel = (code) => {
 <template>
   <div>
     <VAlert v-if="!auth.groupId" type="warning" class="mb-4">
-      你尚未绑定到任何组。
+      {{ t('groupSessions.noGroupBound') }}
     </VAlert>
 
     <VCard class="mb-4">
       <VCardText class="d-flex flex-wrap align-center" style="gap:12px">
-        <VSelect v-model="filters.activity_id" :items="activityOptions" label="活动" density="compact" hide-details style="min-width: 220px" />
-        <VSelect v-model="filters.status" :items="statusOptions" label="状态" density="compact" hide-details style="min-width: 160px" />
+        <VSelect v-model="filters.activity_id" :items="activityOptions" :label="t('sessions.activity')" density="compact" hide-details style="min-width: 220px" />
+        <VSelect v-model="filters.status" :items="statusOptions" :label="t('sessions.status')" density="compact" hide-details style="min-width: 160px" />
         <VBtn icon="ri-refresh-line" variant="text" @click="reload" />
-        <span class="text-caption text-medium-emphasis">活跃会话每 5 秒自动刷新</span>
+        <span class="text-caption text-medium-emphasis">{{ t('groupSessions.autoRefresh') }}</span>
       </VCardText>
     </VCard>
 
@@ -117,7 +151,7 @@ const stageLabel = (code) => {
       <VCol cols="12" md="5">
         <VCard>
           <VCardItem>
-            <VCardTitle>本组会话 <VChip size="small" class="ms-2">{{ sessions.length }}</VChip></VCardTitle>
+            <VCardTitle>{{ t('groupSessions.title') }} <VChip size="small" class="ms-2">{{ sessions.length }}</VChip></VCardTitle>
           </VCardItem>
           <VDivider />
           <div style="max-height: 70vh; overflow:auto">
@@ -133,11 +167,11 @@ const stageLabel = (code) => {
                   <VChip size="x-small" class="ms-1" :color="statusColor(s.status)">{{ s.status }}</VChip>
                 </VListItemTitle>
                 <VListItemSubtitle class="text-caption">
-                  <span v-if="s.visitor_nickname && s.visitor_uid">ID: {{ s.visitor_uid }} · </span>坐席: {{ s.employee_id || '-' }} · 阶段: {{ s.current_stage || '-' }} · {{ fmtTime(s.created_at) }}
+                  <span v-if="s.visitor_nickname && s.visitor_uid">ID: {{ s.visitor_uid }} · </span>{{ t('nav.employees') }}: {{ s.employee_id || '-' }} · {{ t('sessions.stage') }}: {{ s.current_stage || '-' }} · {{ fmtTime(s.created_at) }}
                 </VListItemSubtitle>
               </VListItem>
               <VListItem v-if="!loading && !sessions.length">
-                <VListItemTitle class="text-center text-medium-emphasis">暂无会话</VListItemTitle>
+                <VListItemTitle class="text-center text-medium-emphasis">{{ t('sessions.noSessions') }}</VListItemTitle>
               </VListItem>
             </VList>
           </div>
@@ -148,16 +182,16 @@ const stageLabel = (code) => {
         <VCard style="min-height: 70vh">
           <VCardItem>
             <VCardTitle>
-              {{ selected ? visitorName(selected) : '消息流' }}
+              {{ selected ? visitorName(selected) : t('sessions.messageFlow') }}
             </VCardTitle>
             <template v-if="selected" #append>
-              <VBtn size="small" variant="text" color="warning" @click="transfer">转接</VBtn>
+              <VBtn size="small" variant="text" color="warning" @click="openTransfer">{{ t('session.transfer') }}</VBtn>
               <VChip size="small" class="ms-2" :color="statusColor(selected.status)">{{ selected.status }}</VChip>
             </template>
           </VCardItem>
           <VDivider />
           <VCardText v-if="!selected" class="text-center text-medium-emphasis py-12">
-            请选择左侧会话查看消息
+            {{ t('sessions.selectToView') }}
           </VCardText>
           <div v-else style="max-height: 65vh; overflow:auto; padding: 12px">
             <div v-if="msgLoading" class="text-center py-4">
@@ -191,11 +225,37 @@ const stageLabel = (code) => {
               <div class="mt-1"><MessageContent :m="m" /></div>
             </div>
             <div v-if="!msgLoading && !messages.length" class="text-center text-medium-emphasis py-4">
-              暂无消息
+              {{ t('sessions.noMessages') }}
             </div>
           </div>
         </VCard>
       </VCol>
     </VRow>
+
+    <!-- 转接对话框: 从组内坐席中选择 -->
+    <VDialog v-model="transferDialog" max-width="420">
+      <VCard>
+        <VCardItem>
+          <VCardTitle>{{ t('groupSessions.transferTitle') }}</VCardTitle>
+        </VCardItem>
+        <VCardText>
+          <VSelect
+            v-model="transferTarget"
+            :items="transferOptions"
+            :label="t('groupSessions.transferTargetLabel')"
+            :no-data-text="t('groupSessions.noTransferTarget')"
+            density="compact"
+          />
+          <VAlert v-if="transferErr" type="error" density="compact" class="mt-2">{{ transferErr }}</VAlert>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="text" @click="transferDialog = false">{{ t('general.cancel') }}</VBtn>
+          <VBtn color="primary" :loading="transferring" :disabled="!transferTarget" @click="submitTransfer">
+            {{ t('session.transfer') }}
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </div>
 </template>

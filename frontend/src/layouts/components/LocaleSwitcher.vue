@@ -14,7 +14,6 @@ const i18nStore = useI18nStore() // 初始化 Store
 const languageOptions = {
   en: { title: 'English', icon: 'i-flag-us' },
   zh: { title: '中文', icon: 'i-flag-cn' },
-  ja: { title: '日本語', icon: 'i-flag-jp' },
 }
 
 // 使用 Store 中的可用语言列表

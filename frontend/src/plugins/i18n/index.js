@@ -5,7 +5,7 @@ import { createI18n } from 'vue-i18n'
 // ----------------------------------------------------
 
 // 定义项目支持的所有语言列表
-const SUPPORTED_LOCALES = ['en', 'zh', 'ja', 'fr'] 
+const SUPPORTED_LOCALES = ['en', 'zh']
 const messages = {} // 初始语言包为空，等待异步加载
 
 // 默认语言判断逻辑

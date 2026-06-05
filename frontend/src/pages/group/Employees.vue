@@ -2,29 +2,31 @@
 import CrudTable from '@/components/CrudTable.vue'
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 
-const headers = [
+const headers = computed(() => [
   { title: 'ID', key: 'id' },
-  { title: '姓名', key: 'name' },
+  { title: t('employees.name'), key: 'name' },
   { title: 'AI', key: 'is_ai' },
-  { title: '状态', key: 'status' },
-  { title: '创建时间', key: 'created_at' },
-]
+  { title: t('employees.status'), key: 'status' },
+  { title: t('common.createdAt'), key: 'created_at' },
+])
 
-const formFields = [
-  { key: 'name', label: '坐席名称', required: true },
-  { key: 'is_ai', label: 'AI 坐席', type: 'switch' },
+const formFields = computed(() => [
+  { key: 'name', label: t('employees.nameLabel'), required: true },
+  { key: 'is_ai', label: t('employees.aiEmployee'), type: 'switch' },
   {
-    key: 'status', label: '状态', type: 'select',
+    key: 'status', label: t('employees.status'), type: 'select',
     options: [
       { title: 'online', value: 'online' },
       { title: 'offline', value: 'offline' },
       { title: 'busy', value: 'busy' },
     ],
   },
-]
+])
 
 const fetchFn = async () => {
   const list = await api.get(`/api/orgs/${auth.orgId}/employees?group_id=${auth.groupId}`)
@@ -38,11 +40,11 @@ const deleteFn = (id) => api.delete(`/api/orgs/${auth.orgId}/employees/${id}`)
 <template>
   <div>
     <VAlert v-if="!auth.groupId" type="warning" class="mb-4">
-      你尚未绑定到任何组,无法管理组内坐席。
+      {{ t('groupEmployees.noGroupBound') }}
     </VAlert>
     <CrudTable
       v-else
-      title="组内坐席"
+      :title="t('nav.groupEmployees')"
       :headers="headers"
       :form-fields="formFields"
       :default-form="{ name: '', is_ai: false, status: 'offline' }"
@@ -52,7 +54,7 @@ const deleteFn = (id) => api.delete(`/api/orgs/${auth.orgId}/employees/${id}`)
       :delete-fn="deleteFn"
     >
       <template #cell.is_ai="{ item }">
-        <VChip size="small" :color="item.is_ai ? 'primary' : 'default'">{{ item.is_ai ? 'AI' : '真人' }}</VChip>
+        <VChip size="small" :color="item.is_ai ? 'primary' : 'default'">{{ item.is_ai ? 'AI' : t('employees.human') }}</VChip>
       </template>
       <template #cell.status="{ item }">
         <VChip size="small" :color="{ online: 'success', busy: 'warning', offline: 'default' }[item.status]">{{ item.status }}</VChip>

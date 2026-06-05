@@ -1,12 +1,14 @@
 <script setup>
 import { api, mediaUrl } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const orgId = ref(auth.orgId)
 const orgOptions = ref([])
-const groupOptions = ref([{ title: '所有组', value: null }])
-const activityOptions = ref([{ title: '通用 (不限活动)', value: null }])
+const groupOptions = ref([{ title: t('common.allGroups'), value: null }])
+const activityOptions = ref([{ title: t('materials.generalActivity'), value: null }])
 const materials = ref([])
 const loading = ref(false)
 
@@ -21,11 +23,11 @@ const fileInput = ref(null)
 const loadOptions = async () => {
   if (!orgId.value) return
   const gs = await api.get(`/api/orgs/${orgId.value}/groups`)
-  groupOptions.value = [{ title: '所有组', value: null }, ...gs.map(g => ({ title: g.name, value: g.id }))]
+  groupOptions.value = [{ title: t('common.allGroups'), value: null }, ...gs.map(g => ({ title: g.name, value: g.id }))]
   try {
     const acts = await api.get(`/api/orgs/${orgId.value}/activities`)
-    activityOptions.value = [{ title: '通用 (不限活动)', value: null }, ...acts.map(a => ({ title: a.name, value: a.id }))]
-  } catch { activityOptions.value = [{ title: '通用 (不限活动)', value: null }] }
+    activityOptions.value = [{ title: t('materials.generalActivity'), value: null }, ...acts.map(a => ({ title: a.name, value: a.id }))]
+  } catch { activityOptions.value = [{ title: t('materials.generalActivity'), value: null }] }
 }
 
 const reload = async () => {
@@ -113,7 +115,7 @@ const submit = async () => {
 }
 
 const removeMaterial = async (mat) => {
-  if (!confirm(`确定删除素材 "${mat.title}"?`)) return
+  if (!confirm(t('materials.confirmDelete', { title: mat.title }))) return
   try { await api.delete(`/api/materials/${mat.id}`); await reload() }
   catch (e) { alert(e.detail || e.message) }
 }
@@ -123,29 +125,29 @@ const removeMaterial = async (mat) => {
   <div>
     <VCard v-if="auth.isPlatformAdmin" class="mb-4">
       <VCardText class="d-flex align-center" style="gap:12px">
-        <span class="text-body-2">公司:</span>
+        <span class="text-body-2">{{ t('common.company') }}:</span>
         <VSelect v-model="orgId" :items="orgOptions" density="compact" hide-details style="max-width: 360px" />
       </VCardText>
     </VCard>
 
     <VCard>
       <VCardItem>
-        <VCardTitle>素材库 <VChip size="small" class="ms-2">{{ materials.length }}</VChip></VCardTitle>
+        <VCardTitle>{{ t('nav.materials') }} <VChip size="small" class="ms-2">{{ materials.length }}</VChip></VCardTitle>
         <template #append>
-          <VBtn color="primary" prepend-icon="ri-add-line" @click="openCreate">新建素材</VBtn>
+          <VBtn color="primary" prepend-icon="ri-add-line" @click="openCreate">{{ t('materials.create') }}</VBtn>
           <VBtn icon="ri-refresh-line" variant="text" @click="reload" />
         </template>
       </VCardItem>
       <VDataTable
         :headers="[
-          { title: '预览', key: 'preview', sortable: false, width: 90 },
-          { title: '标题', key: 'title' },
-          { title: '类型', key: 'kind' },
-          { title: '描述', key: 'description' },
-          { title: '组', key: 'group_id' },
-          { title: '活动', key: 'activity_id' },
-          { title: '共享', key: 'is_shared_to_groups' },
-          { title: '操作', key: 'actions', sortable: false, width: 160 },
+          { title: t('materials.preview'), key: 'preview', sortable: false, width: 90 },
+          { title: t('materials.title'), key: 'title' },
+          { title: t('materials.kind'), key: 'kind' },
+          { title: t('materials.description'), key: 'description' },
+          { title: t('common.group'), key: 'group_id' },
+          { title: t('materials.activity'), key: 'activity_id' },
+          { title: t('common.shared'), key: 'is_shared_to_groups' },
+          { title: t('crud.actions'), key: 'actions', sortable: false, width: 160 },
         ]"
         :items="materials"
         :loading="loading"
@@ -163,7 +165,7 @@ const removeMaterial = async (mat) => {
           <VIcon :icon="item.is_shared_to_groups ? 'ri-checkbox-circle-line' : 'ri-close-circle-line'" :color="item.is_shared_to_groups ? 'success' : 'default'" />
         </template>
         <template #item.actions="{ item }">
-          <VBtn size="small" variant="text" @click="openEdit(item)">编辑</VBtn>
+          <VBtn size="small" variant="text" @click="openEdit(item)">{{ t('general.edit') }}</VBtn>
           <VBtn icon="ri-delete-bin-line" size="small" variant="text" color="error" @click="removeMaterial(item)" />
         </template>
       </VDataTable>
@@ -172,29 +174,29 @@ const removeMaterial = async (mat) => {
     <VDialog v-model="dialog" max-width="720">
       <VCard>
         <VCardItem>
-          <VCardTitle>{{ editing ? '编辑素材' : '新建素材' }}</VCardTitle>
+          <VCardTitle>{{ editing ? t('materials.editTitle') : t('materials.create') }}</VCardTitle>
         </VCardItem>
         <VCardText>
           <VRow dense>
-            <VCol cols="12" md="6"><VTextField v-model="form.title" label="素材标题" /></VCol>
+            <VCol cols="12" md="6"><VTextField v-model="form.title" :label="t('materials.titleLabel')" /></VCol>
             <VCol cols="12" md="6">
-              <VSelect v-model="form.kind" :items="['image', 'video', 'text']" label="类型" />
+              <VSelect v-model="form.kind" :items="['image', 'video', 'text']" :label="t('materials.kind')" />
             </VCol>
             <VCol cols="12" md="6">
-              <VSelect v-model="form.group_id" :items="groupOptions" label="所属组 (可空)" />
+              <VSelect v-model="form.group_id" :items="groupOptions" :label="t('common.groupOptional')" />
             </VCol>
             <VCol cols="12" md="6">
-              <VSelect v-model="form.activity_id" :items="activityOptions" label="所属活动 (可空=通用)" />
+              <VSelect v-model="form.activity_id" :items="activityOptions" :label="t('materials.activityOptional')" />
             </VCol>
             <VCol cols="12">
-              <VTextField v-model="form.description" label="选材描述 (给 LLM 看的依据)" />
+              <VTextField v-model="form.description" :label="t('materials.descriptionLabel')" />
             </VCol>
 
             <template v-if="form.kind !== 'text'">
               <VCol cols="12" class="d-flex align-center" style="gap:8px">
                 <input ref="fileInput" type="file" accept="image/*,video/*" style="display:none" @change="onFilePicked" />
-                <VBtn size="small" variant="tonal" prepend-icon="ri-upload-2-line" :loading="uploading" @click="triggerUpload">上传文件</VBtn>
-                <VTextField v-model="form.media_url" label="媒体 URL (或粘贴外链)" density="compact" hide-details />
+                <VBtn size="small" variant="tonal" prepend-icon="ri-upload-2-line" :loading="uploading" @click="triggerUpload">{{ t('materials.uploadFile') }}</VBtn>
+                <VTextField v-model="form.media_url" :label="t('materials.mediaUrlLabel')" density="compact" hide-details />
               </VCol>
               <VCol v-if="form.media_url" cols="12">
                 <img v-if="form.kind === 'image'" :src="mediaUrl(form.media_url)" style="max-width:200px; max-height:160px; border-radius:8px" />
@@ -202,17 +204,17 @@ const removeMaterial = async (mat) => {
               </VCol>
             </template>
             <template v-else>
-              <VCol cols="12"><VTextarea v-model="form.text_content" label="文本内容" rows="6" auto-grow /></VCol>
+              <VCol cols="12"><VTextarea v-model="form.text_content" :label="t('materials.textContent')" rows="6" auto-grow /></VCol>
             </template>
 
-            <VCol cols="12"><VSwitch v-model="form.is_shared_to_groups" label="共享给同公司其他组" inset color="primary" /></VCol>
+            <VCol cols="12"><VSwitch v-model="form.is_shared_to_groups" :label="t('materials.shareToOtherGroups')" inset color="primary" /></VCol>
           </VRow>
           <VAlert v-if="errorMsg" type="error" density="compact" class="mt-2">{{ errorMsg }}</VAlert>
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn variant="text" @click="dialog = false">取消</VBtn>
-          <VBtn color="primary" :loading="submitting" @click="submit">保存</VBtn>
+          <VBtn variant="text" @click="dialog = false">{{ t('general.cancel') }}</VBtn>
+          <VBtn color="primary" :loading="submitting" @click="submit">{{ t('general.save') }}</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

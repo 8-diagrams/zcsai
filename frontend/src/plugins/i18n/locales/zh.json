@@ -8,19 +8,298 @@
     "create": "新建",
     "refresh": "刷新",
     "search": "搜索",
+    "close": "关闭",
     "Login": "登录",
     "Logout": "退出登录",
     "Sign-up": "注册"
   },
-  "menu": {
-    "dashboards": "仪表盘",
-    "analytics": "分析",
-    "apps_pages": "应用与页面",
-    "platform_admin": "平台管理",
-    "org_admin": "公司管理",
-    "group_admin": "组管理",
-    "my_work": "我的工作台",
-    "account": "账户"
+  "common": {
+    "company": "公司",
+    "group": "组",
+    "groupLabel": "所属组",
+    "groupOptional": "所属组 (可空)",
+    "allGroups": "所有组",
+    "selectCompany": "选择公司",
+    "pleaseSelectCompany": "请先选择公司",
+    "createdAt": "创建时间",
+    "shared": "共享",
+    "none": "(无)",
+    "all": "全部",
+    "loading": "加载中…"
+  },
+  "crud": {
+    "actions": "操作",
+    "create": "新建",
+    "edit": "编辑",
+    "searchPlaceholder": "搜索...",
+    "loadFailed": "加载失败",
+    "saveFailed": "保存失败",
+    "deleteFailed": "删除失败",
+    "confirmDelete": "确定删除 \"{name}\" 吗?"
+  },
+  "nav": {
+    "dashboard": "工作台",
+    "referrers": "代理商",
+    "organizations": "公司/租户",
+    "users": "用户账号",
+    "groups": "组管理",
+    "employees": "坐席",
+    "activities": "活动剧本",
+    "kbs": "知识库",
+    "materials": "素材库",
+    "sessions": "会话总览",
+    "orgUsers": "本公司账号",
+    "groupHome": "组首页",
+    "groupEmployees": "组内坐席",
+    "groupAgentAccounts": "组内坐席账号",
+    "groupActivities": "组内活动",
+    "groupKbs": "组内知识库",
+    "groupMaterials": "组内素材库",
+    "groupSessions": "实时会话",
+    "mySessions": "我的会话",
+    "accountSettings": "账户设置",
+    "section": {
+      "platform": "平台管理",
+      "org": "公司管理",
+      "group": "本组管理",
+      "me": "我的工作台",
+      "account": "账户"
+    }
+  },
+  "user": {
+    "notLoggedIn": "未登录"
+  },
+  "roles": {
+    "platform_admin": "平台超管",
+    "org_admin": "公司管理员",
+    "group_admin": "组管理员",
+    "agent": "坐席"
+  },
+  "kbs": {
+    "create": "新建知识库",
+    "name": "名称",
+    "nameLabel": "知识库名称",
+    "usageGuideline": "使用指引",
+    "usageGuidelineLabel": "使用指引 (语气/场景)",
+    "append": "追加",
+    "replace": "替换",
+    "appendTo": "追加知识到 {name}",
+    "replaceTitle": "替换知识库 {name}",
+    "shareToGroups": "共享给所有子组",
+    "newFullText": "新的完整知识文本",
+    "rawText": "知识库原文",
+    "confirmDelete": "确定删除知识库 \"{name}\"?向量也会被清空"
+  },
+  "materials": {
+    "create": "新建素材",
+    "editTitle": "编辑素材",
+    "title": "标题",
+    "titleLabel": "素材标题",
+    "preview": "预览",
+    "kind": "类型",
+    "description": "描述",
+    "descriptionLabel": "选材描述 (给 LLM 看的依据)",
+    "activity": "活动",
+    "activityOptional": "所属活动 (可空=通用)",
+    "generalActivity": "通用 (不限活动)",
+    "uploadFile": "上传文件",
+    "mediaUrlLabel": "媒体 URL (或粘贴外链)",
+    "textContent": "文本内容",
+    "shareToOtherGroups": "共享给同公司其他组",
+    "confirmDelete": "确定删除素材 \"{title}\"?"
+  },
+  "groups": {
+    "name": "组名"
+  },
+  "employees": {
+    "name": "姓名",
+    "nameLabel": "坐席名称",
+    "status": "状态",
+    "aiEmployee": "AI 坐席",
+    "human": "真人"
+  },
+  "activities": {
+    "name": "活动名称",
+    "stagesCount": "阶段数",
+    "execGroup": "执行组",
+    "welcomeMessage": "进线欢迎语",
+    "welcomeMessageShort": "欢迎语",
+    "closingMessage": "结束语",
+    "globalGuideline": "全局基础指引",
+    "stagesConfig": "阶段配置 (JSON: {\"破冰\":\"...\",\"探求\":\"...\"})",
+    "manageRules": "管理事件规则",
+    "invalidStagesJson": "阶段配置 JSON 不合法",
+    "pleaseSelectKb": "请选择知识库",
+    "confirmUnmount": "确定卸载该知识库?",
+    "mountKb": "挂载知识库",
+    "mountKbTitle": "挂载知识库 — {name}",
+    "priority": "优先级",
+    "mountGuideline": "挂载指引",
+    "mountGuidelineOptional": "挂载专属指引 (可选)",
+    "noMounts": "尚未挂载",
+    "mountNewKb": "挂载新的知识库",
+    "selectKb": "选择知识库",
+    "mount": "挂载"
+  },
+  "rules": {
+    "title": "事件规则",
+    "createRule": "新建规则",
+    "name": "名称",
+    "phase": "阶段",
+    "applyActivity": "适用 activity",
+    "priority": "优先级",
+    "enabled": "启用",
+    "allActivitiesShared": "(全部 activity 共用)"
+  },
+  "ruleEditor": {
+    "gateLabel": "AND\n全部满足才执行",
+    "condition": "条件",
+    "action": "动作",
+    "allActivitiesShared": "★ 该公司所有活动通用 (留空)",
+    "ruleName": "规则名称",
+    "applyActivity": "适用活动 (可选某个 activity, 也可全公司通用)",
+    "firePolicy": "触发频率",
+    "shortCircuit": "命中后短路",
+    "addCondition": "加条件",
+    "addAction": "加动作",
+    "deleteSelected": "删除选中",
+    "dryRunPreview": "干跑预览",
+    "field": "字段",
+    "operator": "操作符",
+    "value": "值",
+    "valueStage": "值 (SOP 阶段)",
+    "valueBool": "值 (布尔)",
+    "boolTrue": "是 (true)",
+    "boolFalse": "否 (false)",
+    "commaSeparated": "(多个用逗号分隔)",
+    "numberHint": "(数字)",
+    "actionType": "动作类型",
+    "invalidCtxJson": "上下文 JSON 不合法",
+    "dryRunTitle": "干跑: 模拟一个 ctx 看会不会命中",
+    "simulatedCtx": "模拟上下文 (JSON)",
+    "willMatch": "✅ 会命中",
+    "willNotMatch": "❌ 不会命中",
+    "run": "运行",
+    "af": {
+      "text": "文本",
+      "buttonText": "按钮文案",
+      "imageUrl": "图片 URL",
+      "imageCaption": "图说",
+      "videoUrl": "视频 URL",
+      "caption": "说明",
+      "paymentLink": "支付链接",
+      "amount": "金额",
+      "currency": "币种",
+      "materialId": "素材 ID(暂未启用)",
+      "targetEmployee": "指定员工 ID(可空 = 同组广播)",
+      "targetGroup": "指定组 ID(可空 = 沿用 session.group)",
+      "reason": "原因",
+      "level": "级别(info/warning/urgent)",
+      "notifyTitle": "标题",
+      "content": "内容",
+      "recipientEmployee": "收件员工(可空)",
+      "overrideText": "覆盖文本",
+      "tag": "标签(暂未启用)"
+    }
+  },
+  "sessions": {
+    "title": "会话",
+    "allGroups": "全部组",
+    "allActivities": "全部活动",
+    "allStatus": "全部状态",
+    "activity": "活动",
+    "status": "状态",
+    "stage": "阶段",
+    "channel": "渠道",
+    "noSessions": "暂无会话",
+    "noMessages": "暂无消息",
+    "messageFlow": "消息流",
+    "selectToView": "请选择左侧会话查看消息"
+  },
+  "session": {
+    "status": {
+      "active": "进行中",
+      "closed": "已关闭",
+      "transferred": "已转接"
+    },
+    "sender": {
+      "visitor": "访客",
+      "employee": "坐席",
+      "system": "系统"
+    },
+    "emotion": {
+      "calm": "平静",
+      "joy": "喜悦",
+      "excited": "兴奋",
+      "hesitation": "犹豫",
+      "impatience": "急躁",
+      "anger": "愤怒"
+    },
+    "transfer": "转接",
+    "close": "关闭会话",
+    "send": "发送"
+  },
+  "meSession": {
+    "backToList": "返回会话列表",
+    "sessionLabel": "会话",
+    "confirmClose": "确定关闭该会话?",
+    "inputPlaceholder": "输入回复内容,Ctrl/Cmd + Enter 发送",
+    "uploadMedia": "上传图片/视频",
+    "pickFromLibrary": "从素材库选",
+    "pickFromLibraryTitle": "从素材库选择",
+    "mediaNeedsTakeover": "发送图片/视频/素材需先「接管」会话",
+    "noMaterials": "暂无可用素材",
+    "enter": "进入"
+  },
+  "users": {
+    "email": "邮箱",
+    "displayName": "昵称",
+    "role": "角色",
+    "passwordHint": "密码 (编辑时留空则不变)",
+    "orgLabel": "所属公司",
+    "bindEmployee": "绑定坐席 (agent)",
+    "pleaseEnterPassword": "请填写密码"
+  },
+  "organizations": {
+    "name": "公司名称",
+    "plan": "套餐",
+    "apiKeyHint": "API Key (留空自动生成)",
+    "referrer": "归属代理商"
+  },
+  "referrers": {
+    "name": "代理商名称",
+    "commissionRate": "分佣比例",
+    "commissionRateLabel": "分佣比例 (0~1)"
+  },
+  "groupIndex": {
+    "title": "本组工作台",
+    "welcome": "欢迎,{name}。",
+    "groupIdLabel": "所属组 ID",
+    "employeeCount": "当前坐席数量",
+    "activityCount": "活动剧本数量",
+    "activeSessions": "进行中会话",
+    "activeSessionsSub": "实时活跃会话",
+    "view": "查看",
+    "monitor": "监控"
+  },
+  "groupEmployees": {
+    "noGroupBound": "你尚未绑定到任何组,无法管理组内坐席。"
+  },
+  "groupActivities": {
+    "noGroupBound": "你尚未绑定到任何组,无法查看组内活动。"
+  },
+  "groupSessions": {
+    "title": "本组会话",
+    "noGroupBound": "你尚未绑定到任何组。",
+    "autoRefresh": "活跃会话每 5 秒自动刷新",
+    "transferTitle": "转接会话",
+    "transferTargetLabel": "选择接收坐席",
+    "noTransferTarget": "本组暂无其他可选坐席"
+  },
+  "page403": {
+    "title": "403 · 无权访问",
+    "desc": "当前账号角色没有访问该页面的权限",
+    "backHome": "返回首页"
   },
   "page_register": {
     "h4": "一个平台，连接全球团队",
@@ -36,7 +315,10 @@
     "New-on-our-platform": "首次使用我们的平台？",
     "Forgot-Password": "忘记密码？",
     "Create-an-account": "创建账号",
-    "Remember-me": "记住我"
+    "Remember-me": "记住我",
+    "fillEmailPassword": "请填写邮箱和密码",
+    "loginFailed": "登录失败",
+    "defaultAccount": "默认账号:admin@local / admin123"
   },
   "page_admin": {
     "referrers": "代理商管理",
@@ -60,25 +342,14 @@
     "sessions": "我的会话",
     "session": "会话工作台"
   },
-  "roles": {
-    "platform_admin": "平台超管",
-    "org_admin": "公司管理员",
-    "group_admin": "组管理员",
-    "agent": "坐席"
-  },
-  "session": {
-    "status": {
-      "active": "进行中",
-      "closed": "已关闭",
-      "transferred": "已转接"
-    },
-    "sender": {
-      "visitor": "访客",
-      "employee": "坐席",
-      "system": "系统"
-    },
-    "transfer": "转接",
-    "close": "关闭会话",
-    "send": "发送"
+  "menu": {
+    "dashboards": "仪表盘",
+    "analytics": "分析",
+    "apps_pages": "应用与页面",
+    "platform_admin": "平台管理",
+    "org_admin": "公司管理",
+    "group_admin": "组管理",
+    "my_work": "我的工作台",
+    "account": "账户"
   }
 }

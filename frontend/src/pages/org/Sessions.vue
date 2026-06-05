@@ -1,18 +1,20 @@
 <script setup>
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const orgId = ref(auth.orgId)
 const orgOptions = ref([])
-const groupOptions = ref([{ title: '全部组', value: null }])
-const activityOptions = ref([{ title: '全部活动', value: null }])
-const statusOptions = [
-  { title: '全部状态', value: null },
+const groupOptions = ref([{ title: t('sessions.allGroups'), value: null }])
+const activityOptions = ref([{ title: t('sessions.allActivities'), value: null }])
+const statusOptions = computed(() => [
+  { title: t('sessions.allStatus'), value: null },
   { title: 'active', value: 'active' },
   { title: 'closed', value: 'closed' },
   { title: 'transferred', value: 'transferred' },
-]
+])
 
 const filters = ref({ group_id: null, activity_id: null, status: null })
 const sessions = ref([])
@@ -28,8 +30,8 @@ const loadOptions = async () => {
     api.get(`/api/orgs/${orgId.value}/groups`),
     api.get(`/api/orgs/${orgId.value}/activities`),
   ])
-  groupOptions.value = [{ title: '全部组', value: null }, ...gs.map(g => ({ title: g.name, value: g.id }))]
-  activityOptions.value = [{ title: '全部活动', value: null }, ...acts.map(a => ({ title: a.name, value: a.id }))]
+  groupOptions.value = [{ title: t('sessions.allGroups'), value: null }, ...gs.map(g => ({ title: g.name, value: g.id }))]
+  activityOptions.value = [{ title: t('sessions.allActivities'), value: null }, ...acts.map(a => ({ title: a.name, value: a.id }))]
   stagesByActivity.value = Object.fromEntries(acts.map(a => [a.id, a.stages_config || {}]))
 }
 
@@ -84,15 +86,11 @@ const senderLabel = (m) => {
   }
   return m.sender_id || ''
 }
-const EMOTION_META = {
-  calm:       { label: '平静', color: 'default' },
-  joy:        { label: '喜悦', color: 'success' },
-  excited:    { label: '兴奋', color: 'success' },
-  hesitation: { label: '犹豫', color: 'info' },
-  impatience: { label: '急躁', color: 'warning' },
-  anger:      { label: '愤怒', color: 'error' },
+const EMOTION_COLOR = {
+  calm: 'default', joy: 'success', excited: 'success',
+  hesitation: 'info', impatience: 'warning', anger: 'error',
 }
-const emotionMeta = (e) => EMOTION_META[e] || null
+const emotionMeta = (e) => e && EMOTION_COLOR[e] ? { label: t(`session.emotion.${e}`), color: EMOTION_COLOR[e] } : null
 const stageLabel = (code) => {
   if (!code) return ''
   const aid = selected.value?.activity_id
@@ -105,16 +103,16 @@ const stageLabel = (code) => {
   <div>
     <VCard v-if="auth.isPlatformAdmin" class="mb-4">
       <VCardText class="d-flex align-center" style="gap:12px">
-        <span class="text-body-2">公司:</span>
+        <span class="text-body-2">{{ t('common.company') }}:</span>
         <VSelect v-model="orgId" :items="orgOptions" density="compact" hide-details style="max-width: 360px" />
       </VCardText>
     </VCard>
 
     <VCard class="mb-4">
       <VCardText class="d-flex flex-wrap align-center" style="gap:12px">
-        <VSelect v-model="filters.group_id" :items="groupOptions" label="组" density="compact" hide-details style="min-width: 180px" />
-        <VSelect v-model="filters.activity_id" :items="activityOptions" label="活动" density="compact" hide-details style="min-width: 220px" />
-        <VSelect v-model="filters.status" :items="statusOptions" label="状态" density="compact" hide-details style="min-width: 160px" />
+        <VSelect v-model="filters.group_id" :items="groupOptions" :label="t('common.group')" density="compact" hide-details style="min-width: 180px" />
+        <VSelect v-model="filters.activity_id" :items="activityOptions" :label="t('sessions.activity')" density="compact" hide-details style="min-width: 220px" />
+        <VSelect v-model="filters.status" :items="statusOptions" :label="t('sessions.status')" density="compact" hide-details style="min-width: 160px" />
         <VBtn icon="ri-refresh-line" variant="text" @click="reload" />
       </VCardText>
     </VCard>
@@ -123,7 +121,7 @@ const stageLabel = (code) => {
       <VCol cols="12" md="5">
         <VCard>
           <VCardItem>
-            <VCardTitle>会话 <VChip size="small" class="ms-2">{{ sessions.length }}</VChip></VCardTitle>
+            <VCardTitle>{{ t('sessions.title') }} <VChip size="small" class="ms-2">{{ sessions.length }}</VChip></VCardTitle>
           </VCardItem>
           <VDivider />
           <div style="max-height: 70vh; overflow:auto">
@@ -144,11 +142,11 @@ const stageLabel = (code) => {
                   <VChip size="x-small" class="ms-1" :color="statusColor(s.status)">{{ s.status }}</VChip>
                 </VListItemTitle>
                 <VListItemSubtitle class="text-caption">
-                  <span v-if="s.visitor_nickname && s.visitor_uid">ID: {{ s.visitor_uid }} · </span>阶段: {{ s.current_stage || '-' }} · 渠道: {{ s.platform_type || '-' }} · {{ fmtTime(s.created_at) }}
+                  <span v-if="s.visitor_nickname && s.visitor_uid">ID: {{ s.visitor_uid }} · </span>{{ t('sessions.stage') }}: {{ s.current_stage || '-' }} · {{ t('sessions.channel') }}: {{ s.platform_type || '-' }} · {{ fmtTime(s.created_at) }}
                 </VListItemSubtitle>
               </VListItem>
               <VListItem v-if="!loading && !sessions.length">
-                <VListItemTitle class="text-center text-medium-emphasis">暂无会话</VListItemTitle>
+                <VListItemTitle class="text-center text-medium-emphasis">{{ t('sessions.noSessions') }}</VListItemTitle>
               </VListItem>
             </VList>
           </div>
@@ -159,7 +157,7 @@ const stageLabel = (code) => {
         <VCard style="min-height: 70vh">
           <VCardItem>
             <VCardTitle>
-              {{ selected ? visitorName(selected) : '消息流' }}
+              {{ selected ? visitorName(selected) : t('sessions.messageFlow') }}
             </VCardTitle>
             <template v-if="selected" #append>
               <VChip size="small" :color="statusColor(selected.status)">{{ selected.status }}</VChip>
@@ -167,7 +165,7 @@ const stageLabel = (code) => {
           </VCardItem>
           <VDivider />
           <VCardText v-if="!selected" class="text-center text-medium-emphasis py-12">
-            请选择左侧会话查看消息
+            {{ t('sessions.selectToView') }}
           </VCardText>
           <div v-else style="max-height: 65vh; overflow:auto; padding: 12px">
             <div v-if="msgLoading" class="text-center py-4">
@@ -201,7 +199,7 @@ const stageLabel = (code) => {
               <div class="mt-1"><MessageContent :m="m" /></div>
             </div>
             <div v-if="!msgLoading && !messages.length" class="text-center text-medium-emphasis py-4">
-              暂无消息
+              {{ t('sessions.noMessages') }}
             </div>
           </div>
         </VCard>

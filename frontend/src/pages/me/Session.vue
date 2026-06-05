@@ -2,7 +2,9 @@
 import { api, mediaUrl } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -30,8 +32,10 @@ const loadStages = async () => {
   } catch { stagesCfg.value = {} }
 }
 
-const reload = async () => {
-  loading.value = true
+// silent=true 用于定时轮询: 不显示 loading、内容无变化不重渲染、
+// 仅在用户原本就贴着底部且有新消息时才自动滚到底 (避免往上翻看历史时被拽回去)。
+const reload = async ({ silent = false } = {}) => {
+  if (!silent) loading.value = true
   errorMsg.value = ''
   try {
     const list = await api.get('/api/me/sessions')
@@ -41,12 +45,22 @@ const reload = async () => {
       session.value = all.find(s => s.id === sid.value) || null
     }
     await loadStages()
-    messages.value = await api.get(`/api/sessions/${sid.value}/messages`)
+
+    const el = scrollerRef.value
+    const wasNearBottom = el ? (el.scrollHeight - el.scrollTop - el.clientHeight < 80) : true
+    const newMsgs = await api.get(`/api/sessions/${sid.value}/messages`)
+    const prev = messages.value
+    // 内容无变化 (条数相同且末条 id 相同) 就不重赋值, 避免无谓重渲染
+    const changed = newMsgs.length !== prev.length || newMsgs.at(-1)?.id !== prev.at(-1)?.id
+    if (changed) messages.value = newMsgs
+
     await nextTick()
-    if (scrollerRef.value) scrollerRef.value.scrollTop = scrollerRef.value.scrollHeight
+    if (el && (!silent || (changed && wasNearBottom))) {
+      el.scrollTop = el.scrollHeight
+    }
   } catch (e) {
     errorMsg.value = e.detail || e.message
-  } finally { loading.value = false }
+  } finally { if (!silent) loading.value = false }
 }
 
 const send = async () => {
@@ -63,7 +77,7 @@ const send = async () => {
 }
 
 const close = async () => {
-  if (!confirm('确定关闭该会话?')) return
+  if (!confirm(t('meSession.confirmClose'))) return
   try {
     await api.post(`/api/sessions/${sid.value}/close`, {})
     await reload()
@@ -117,13 +131,13 @@ const sendMaterial = async (mat) => {
   } catch (e) { errorMsg.value = e.detail || e.message }
 }
 
-onMounted(reload)
-watch(sid, reload)
+onMounted(() => reload())
+watch(sid, () => reload())
 
 let timer = null
 onMounted(() => {
   timer = setInterval(() => {
-    if (session.value?.status === 'active') reload()
+    if (session.value?.status === 'active') reload({ silent: true })
   }, 4000)
 })
 onUnmounted(() => timer && clearInterval(timer))
@@ -142,15 +156,11 @@ const senderLabel = (m) => {
   }
   return m.sender_id ? `${m.sender_type} · ${m.sender_id}` : m.sender_type
 }
-const EMOTION_META = {
-  calm:       { label: '平静', color: 'default' },
-  joy:        { label: '喜悦', color: 'success' },
-  excited:    { label: '兴奋', color: 'success' },
-  hesitation: { label: '犹豫', color: 'info' },
-  impatience: { label: '急躁', color: 'warning' },
-  anger:      { label: '愤怒', color: 'error' },
+const EMOTION_COLOR = {
+  calm: 'default', joy: 'success', excited: 'success',
+  hesitation: 'info', impatience: 'warning', anger: 'error',
 }
-const emotionMeta = (e) => EMOTION_META[e] || null
+const emotionMeta = (e) => e && EMOTION_COLOR[e] ? { label: t(`session.emotion.${e}`), color: EMOTION_COLOR[e] } : null
 const stageLabel = (code) => {
   if (!code) return ''
   return stagesCfg.value?.[code]?.name || code
@@ -159,15 +169,15 @@ const stageLabel = (code) => {
 
 <template>
   <div>
-    <VBtn variant="text" prepend-icon="ri-arrow-left-line" class="mb-2" @click="router.push('/me/sessions')">返回会话列表</VBtn>
+    <VBtn variant="text" prepend-icon="ri-arrow-left-line" class="mb-2" @click="router.push('/me/sessions')">{{ t('meSession.backToList') }}</VBtn>
 
     <VCard>
       <VCardItem>
         <VCardTitle>
-          会话: {{ visitorName }}
+          {{ t('meSession.sessionLabel') }}: {{ visitorName }}
         </VCardTitle>
         <VCardSubtitle v-if="session">
-          <span v-if="session.visitor_nickname && session.visitor_uid">ID: {{ session.visitor_uid }} · </span>阶段: {{ session.current_stage || '-' }} · 活动: {{ session.activity_id || '-' }} · 渠道: {{ session.platform_type || '-' }}
+          <span v-if="session.visitor_nickname && session.visitor_uid">ID: {{ session.visitor_uid }} · </span>{{ t('sessions.stage') }}: {{ session.current_stage || '-' }} · {{ t('sessions.activity') }}: {{ session.activity_id || '-' }} · {{ t('sessions.channel') }}: {{ session.platform_type || '-' }}
         </VCardSubtitle>
         <template v-if="session" #append>
           <VChip size="small" :color="statusColor(session.status)">{{ session.status }}</VChip>
@@ -179,7 +189,7 @@ const stageLabel = (code) => {
             class="ms-2"
             @click="close"
           >
-            关闭
+            {{ t('general.close') }}
           </VBtn>
         </template>
       </VCardItem>
@@ -225,7 +235,7 @@ const stageLabel = (code) => {
           </div>
         </div>
         <div v-if="!loading && !messages.length" class="text-center text-medium-emphasis py-4">
-          暂无消息
+          {{ t('sessions.noMessages') }}
         </div>
       </div>
 
@@ -235,7 +245,7 @@ const stageLabel = (code) => {
         <div class="d-flex" style="gap:8px">
           <VTextarea
             v-model="input"
-            placeholder="输入回复内容,Ctrl/Cmd + Enter 发送"
+            :placeholder="t('meSession.inputPlaceholder')"
             rows="2"
             auto-grow
             hide-details
@@ -249,7 +259,7 @@ const stageLabel = (code) => {
             :disabled="session?.status !== 'active' || !input.trim()"
             @click="send"
           >
-            发送
+            {{ t('session.send') }}
           </VBtn>
         </div>
         <div class="d-flex mt-2" style="gap:8px">
@@ -262,7 +272,7 @@ const stageLabel = (code) => {
             :disabled="session?.status !== 'active'"
             @click="triggerUpload"
           >
-            上传图片/视频
+            {{ t('meSession.uploadMedia') }}
           </VBtn>
           <VBtn
             size="small"
@@ -271,21 +281,21 @@ const stageLabel = (code) => {
             :disabled="session?.status !== 'active'"
             @click="openMaterials"
           >
-            从素材库选
+            {{ t('meSession.pickFromLibrary') }}
           </VBtn>
         </div>
         <div class="text-caption text-medium-emphasis mt-1">
-          发送图片/视频/素材需先「接管」会话
+          {{ t('meSession.mediaNeedsTakeover') }}
         </div>
       </VCardText>
     </VCard>
 
     <!-- 素材库选择 -->
     <VDialog v-model="matDialog" max-width="640">
-      <VCard title="从素材库选择">
+      <VCard :title="t('meSession.pickFromLibraryTitle')">
         <VCardText>
-          <div v-if="matLoading" class="text-center py-4">加载中…</div>
-          <div v-else-if="!materials.length" class="text-center text-medium-emphasis py-4">暂无可用素材</div>
+          <div v-if="matLoading" class="text-center py-4">{{ t('common.loading') }}</div>
+          <div v-else-if="!materials.length" class="text-center text-medium-emphasis py-4">{{ t('meSession.noMaterials') }}</div>
           <VRow v-else>
             <VCol v-for="mat in materials" :key="mat.id" cols="6" md="4">
               <VCard variant="outlined" class="pa-2" style="cursor:pointer" @click="sendMaterial(mat)">
@@ -300,7 +310,7 @@ const stageLabel = (code) => {
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn @click="matDialog = false">关闭</VBtn>
+          <VBtn @click="matDialog = false">{{ t('general.close') }}</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>

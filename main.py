@@ -20,7 +20,7 @@ import UtilRAG #import retrieve_rag_context
 import UtilMem
 
 #move to config.py
-from config import settings, YQrequirement
+from config import settings, YQrequirement, to_public_url
 
 #router
 from router_kb import router as kb_router
@@ -217,8 +217,8 @@ async def push_media(db, conn_id: str, sess, *, kind: str, url: str,
         visitor_platform_id_at_send=sess.visitor_uid,
     ))
     await db.commit()
-    # 推 WS
-    payload = {"session_id": sess.id, "kind": kind, "url": url}
+    # 推 WS (URL 拼成绝对地址, 访客 widget 跨域也能直接打开)
+    payload = {"session_id": sess.id, "kind": kind, "url": to_public_url(url)}
     if caption:
         payload["caption"] = caption
     await manager.send_to_client(conn_id, {"action": "inject_media", "data": payload})

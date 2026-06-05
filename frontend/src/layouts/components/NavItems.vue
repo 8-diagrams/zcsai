@@ -10,7 +10,7 @@ const auth = useAuthStore()
   <!-- 通用 -->
   <VerticalNavLink
     :item="{
-      title: '工作台',
+      title: $t('nav.dashboard'),
       icon: 'ri-home-smile-line',
       to: '/dashboard',
     }"
@@ -18,24 +18,24 @@ const auth = useAuthStore()
 
   <!-- 平台管理员 -->
   <template v-if="auth.isPlatformAdmin">
-    <VerticalNavSectionTitle :item="{ heading: '平台管理' }" />
+    <VerticalNavSectionTitle :item="{ heading: $t('nav.section.platform') }" />
     <VerticalNavLink
       :item="{
-        title: '代理商',
+        title: $t('nav.referrers'),
         icon: 'ri-shake-hands-line',
         to: '/admin/referrers',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '公司/租户',
+        title: $t('nav.organizations'),
         icon: 'ri-building-line',
         to: '/admin/organizations',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '用户账号',
+        title: $t('nav.users'),
         icon: 'ri-user-settings-line',
         to: '/admin/users',
       }"
@@ -44,45 +44,45 @@ const auth = useAuthStore()
 
   <!-- 公司管理员 -->
   <template v-if="auth.isOrgAdmin || auth.isPlatformAdmin">
-    <VerticalNavSectionTitle :item="{ heading: '公司管理' }" />
+    <VerticalNavSectionTitle :item="{ heading: $t('nav.section.org') }" />
     <VerticalNavLink
       :item="{
-        title: '组管理',
+        title: $t('nav.groups'),
         icon: 'ri-team-line',
         to: '/org/groups',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '坐席',
+        title: $t('nav.employees'),
         icon: 'ri-customer-service-2-line',
         to: '/org/employees',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '活动剧本',
+        title: $t('nav.activities'),
         icon: 'ri-flag-line',
         to: '/org/activities',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '知识库',
+        title: $t('nav.kbs'),
         icon: 'ri-book-open-line',
         to: '/org/kbs',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '素材库',
+        title: $t('nav.materials'),
         icon: 'ri-image-2-line',
         to: '/org/materials',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '会话总览',
+        title: $t('nav.sessions'),
         icon: 'ri-chat-3-line',
         to: '/org/sessions',
       }"
@@ -90,7 +90,7 @@ const auth = useAuthStore()
     <VerticalNavLink
       v-if="auth.isOrgAdmin"
       :item="{
-        title: '本公司账号',
+        title: $t('nav.orgUsers'),
         icon: 'ri-user-settings-line',
         to: '/admin/users',
       }"
@@ -99,45 +99,52 @@ const auth = useAuthStore()
 
   <!-- 组管理员 -->
   <template v-if="auth.isGroupAdmin">
-    <VerticalNavSectionTitle :item="{ heading: '本组管理' }" />
+    <VerticalNavSectionTitle :item="{ heading: $t('nav.section.group') }" />
     <VerticalNavLink
       :item="{
-        title: '组首页',
+        title: $t('nav.groupHome'),
         icon: 'ri-dashboard-3-line',
         to: '/group',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '组内坐席',
+        title: $t('nav.groupEmployees'),
         icon: 'ri-customer-service-2-line',
         to: '/group/employees',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '组内活动',
+        title: $t('nav.groupAgentAccounts'),
+        icon: 'ri-user-settings-line',
+        to: '/admin/users',
+      }"
+    />
+    <VerticalNavLink
+      :item="{
+        title: $t('nav.groupActivities'),
         icon: 'ri-flag-line',
         to: '/group/activities',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '组内知识库',
+        title: $t('nav.groupKbs'),
         icon: 'ri-book-open-line',
         to: '/org/kbs',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '组内素材库',
+        title: $t('nav.groupMaterials'),
         icon: 'ri-image-2-line',
         to: '/org/materials',
       }"
     />
     <VerticalNavLink
       :item="{
-        title: '实时会话',
+        title: $t('nav.groupSessions'),
         icon: 'ri-chat-poll-line',
         to: '/group/sessions',
       }"
@@ -146,10 +153,10 @@ const auth = useAuthStore()
 
   <!-- 坐席 -->
   <template v-if="auth.isAgent">
-    <VerticalNavSectionTitle :item="{ heading: '我的工作台' }" />
+    <VerticalNavSectionTitle :item="{ heading: $t('nav.section.me') }" />
     <VerticalNavLink
       :item="{
-        title: '我的会话',
+        title: $t('nav.mySessions'),
         icon: 'ri-chat-1-line',
         to: '/me/sessions',
       }"
@@ -157,10 +164,10 @@ const auth = useAuthStore()
   </template>
 
   <!-- 公共底部 -->
-  <VerticalNavSectionTitle :item="{ heading: '账户' }" />
+  <VerticalNavSectionTitle :item="{ heading: $t('nav.section.account') }" />
   <VerticalNavLink
     :item="{
-      title: '账户设置',
+      title: $t('nav.accountSettings'),
       icon: 'ri-settings-3-line',
       to: '/account-settings',
     }"

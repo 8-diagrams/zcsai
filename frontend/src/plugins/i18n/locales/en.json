@@ -8,19 +8,298 @@
     "create": "Create",
     "refresh": "Refresh",
     "search": "Search",
+    "close": "Close",
     "Login": "Login",
     "Logout": "Logout",
     "Sign-up": "Sign Up"
   },
-  "menu": {
-    "dashboards": "Dashboards",
-    "analytics": "Analytics",
-    "apps_pages": "Apps & Pages",
-    "platform_admin": "Platform",
-    "org_admin": "Company",
-    "group_admin": "Team",
-    "my_work": "My Workspace",
-    "account": "Account"
+  "common": {
+    "company": "Company",
+    "group": "Group",
+    "groupLabel": "Group",
+    "groupOptional": "Group (optional)",
+    "allGroups": "All Groups",
+    "selectCompany": "Select Company",
+    "pleaseSelectCompany": "Please select a company first",
+    "createdAt": "Created At",
+    "shared": "Shared",
+    "none": "(None)",
+    "all": "All",
+    "loading": "Loading…"
+  },
+  "crud": {
+    "actions": "Actions",
+    "create": "Create",
+    "edit": "Edit",
+    "searchPlaceholder": "Search...",
+    "loadFailed": "Failed to load",
+    "saveFailed": "Failed to save",
+    "deleteFailed": "Failed to delete",
+    "confirmDelete": "Delete \"{name}\"?"
+  },
+  "nav": {
+    "dashboard": "Workspace",
+    "referrers": "Referrers",
+    "organizations": "Companies / Tenants",
+    "users": "User Accounts",
+    "groups": "Groups",
+    "employees": "Agents",
+    "activities": "Activities",
+    "kbs": "Knowledge Bases",
+    "materials": "Material Library",
+    "sessions": "Sessions Overview",
+    "orgUsers": "Company Accounts",
+    "groupHome": "Group Home",
+    "groupEmployees": "Group Agents",
+    "groupAgentAccounts": "Group Agent Accounts",
+    "groupActivities": "Group Activities",
+    "groupKbs": "Group Knowledge Bases",
+    "groupMaterials": "Group Materials",
+    "groupSessions": "Live Sessions",
+    "mySessions": "My Sessions",
+    "accountSettings": "Account Settings",
+    "section": {
+      "platform": "Platform",
+      "org": "Company",
+      "group": "My Group",
+      "me": "My Workspace",
+      "account": "Account"
+    }
+  },
+  "user": {
+    "notLoggedIn": "Not logged in"
+  },
+  "roles": {
+    "platform_admin": "Platform Admin",
+    "org_admin": "Org Admin",
+    "group_admin": "Group Admin",
+    "agent": "Agent"
+  },
+  "kbs": {
+    "create": "New Knowledge Base",
+    "name": "Name",
+    "nameLabel": "Knowledge Base Name",
+    "usageGuideline": "Usage Guideline",
+    "usageGuidelineLabel": "Usage Guideline (tone / scenario)",
+    "append": "Append",
+    "replace": "Replace",
+    "appendTo": "Append knowledge to {name}",
+    "replaceTitle": "Replace Knowledge Base {name}",
+    "shareToGroups": "Share with all sub-groups",
+    "newFullText": "New full knowledge text",
+    "rawText": "Knowledge Base source text",
+    "confirmDelete": "Delete knowledge base \"{name}\"? Vectors will also be cleared"
+  },
+  "materials": {
+    "create": "New Material",
+    "editTitle": "Edit Material",
+    "title": "Title",
+    "titleLabel": "Material Title",
+    "preview": "Preview",
+    "kind": "Type",
+    "description": "Description",
+    "descriptionLabel": "Selection description (for the LLM)",
+    "activity": "Activity",
+    "activityOptional": "Activity (optional = general)",
+    "generalActivity": "General (any activity)",
+    "uploadFile": "Upload File",
+    "mediaUrlLabel": "Media URL (or paste a link)",
+    "textContent": "Text Content",
+    "shareToOtherGroups": "Share with other groups in the company",
+    "confirmDelete": "Delete material \"{title}\"?"
+  },
+  "groups": {
+    "name": "Group Name"
+  },
+  "employees": {
+    "name": "Name",
+    "nameLabel": "Agent Name",
+    "status": "Status",
+    "aiEmployee": "AI Agent",
+    "human": "Human"
+  },
+  "activities": {
+    "name": "Activity Name",
+    "stagesCount": "Stages",
+    "execGroup": "Executing Group",
+    "welcomeMessage": "Welcome Message",
+    "welcomeMessageShort": "Welcome",
+    "closingMessage": "Closing Message",
+    "globalGuideline": "Global Base Guideline",
+    "stagesConfig": "Stages Config (JSON: {\"icebreak\":\"...\",\"explore\":\"...\"})",
+    "manageRules": "Manage Event Rules",
+    "invalidStagesJson": "Invalid stages config JSON",
+    "pleaseSelectKb": "Please select a knowledge base",
+    "confirmUnmount": "Unmount this knowledge base?",
+    "mountKb": "Mount KB",
+    "mountKbTitle": "Mount Knowledge Base — {name}",
+    "priority": "Priority",
+    "mountGuideline": "Mount Guideline",
+    "mountGuidelineOptional": "Mount-specific guideline (optional)",
+    "noMounts": "No mounts yet",
+    "mountNewKb": "Mount a new knowledge base",
+    "selectKb": "Select Knowledge Base",
+    "mount": "Mount"
+  },
+  "rules": {
+    "title": "Event Rules",
+    "createRule": "New Rule",
+    "name": "Name",
+    "phase": "Phase",
+    "applyActivity": "Applies to activity",
+    "priority": "Priority",
+    "enabled": "Enabled",
+    "allActivitiesShared": "(shared by all activities)"
+  },
+  "ruleEditor": {
+    "gateLabel": "AND\nall must match",
+    "condition": "Condition",
+    "action": "Action",
+    "allActivitiesShared": "★ Shared by all company activities (leave empty)",
+    "ruleName": "Rule Name",
+    "applyActivity": "Applies to activity (a specific one, or company-wide)",
+    "firePolicy": "Fire Policy",
+    "shortCircuit": "Short-circuit on match",
+    "addCondition": "Add Condition",
+    "addAction": "Add Action",
+    "deleteSelected": "Delete Selected",
+    "dryRunPreview": "Dry-run Preview",
+    "field": "Field",
+    "operator": "Operator",
+    "value": "Value",
+    "valueStage": "Value (SOP stage)",
+    "valueBool": "Value (boolean)",
+    "boolTrue": "Yes (true)",
+    "boolFalse": "No (false)",
+    "commaSeparated": "(comma-separated)",
+    "numberHint": "(number)",
+    "actionType": "Action Type",
+    "invalidCtxJson": "Invalid context JSON",
+    "dryRunTitle": "Dry-run: simulate a ctx to see if it matches",
+    "simulatedCtx": "Simulated context (JSON)",
+    "willMatch": "✅ Will match",
+    "willNotMatch": "❌ Will not match",
+    "run": "Run",
+    "af": {
+      "text": "Text",
+      "buttonText": "Button Text",
+      "imageUrl": "Image URL",
+      "imageCaption": "Image Caption",
+      "videoUrl": "Video URL",
+      "caption": "Caption",
+      "paymentLink": "Payment Link",
+      "amount": "Amount",
+      "currency": "Currency",
+      "materialId": "Material ID (not enabled yet)",
+      "targetEmployee": "Target Employee ID (empty = broadcast to group)",
+      "targetGroup": "Target Group ID (empty = use session.group)",
+      "reason": "Reason",
+      "level": "Level (info/warning/urgent)",
+      "notifyTitle": "Title",
+      "content": "Content",
+      "recipientEmployee": "Recipient Employee (optional)",
+      "overrideText": "Override Text",
+      "tag": "Tag (not enabled yet)"
+    }
+  },
+  "sessions": {
+    "title": "Sessions",
+    "allGroups": "All Groups",
+    "allActivities": "All Activities",
+    "allStatus": "All Statuses",
+    "activity": "Activity",
+    "status": "Status",
+    "stage": "Stage",
+    "channel": "Channel",
+    "noSessions": "No sessions",
+    "noMessages": "No messages",
+    "messageFlow": "Message Flow",
+    "selectToView": "Select a session on the left to view messages"
+  },
+  "session": {
+    "status": {
+      "active": "Active",
+      "closed": "Closed",
+      "transferred": "Transferred"
+    },
+    "sender": {
+      "visitor": "Visitor",
+      "employee": "Agent",
+      "system": "System"
+    },
+    "emotion": {
+      "calm": "Calm",
+      "joy": "Joy",
+      "excited": "Excited",
+      "hesitation": "Hesitation",
+      "impatience": "Impatience",
+      "anger": "Anger"
+    },
+    "transfer": "Transfer",
+    "close": "Close",
+    "send": "Send"
+  },
+  "meSession": {
+    "backToList": "Back to session list",
+    "sessionLabel": "Session",
+    "confirmClose": "Close this session?",
+    "inputPlaceholder": "Type a reply, Ctrl/Cmd + Enter to send",
+    "uploadMedia": "Upload Image/Video",
+    "pickFromLibrary": "Pick from Library",
+    "pickFromLibraryTitle": "Pick from Material Library",
+    "mediaNeedsTakeover": "Sending image/video/material requires taking over the session first",
+    "noMaterials": "No materials available",
+    "enter": "Enter"
+  },
+  "users": {
+    "email": "Email",
+    "displayName": "Display Name",
+    "role": "Role",
+    "passwordHint": "Password (leave empty to keep unchanged when editing)",
+    "orgLabel": "Company",
+    "bindEmployee": "Bind Agent (agent)",
+    "pleaseEnterPassword": "Please enter a password"
+  },
+  "organizations": {
+    "name": "Company Name",
+    "plan": "Plan",
+    "apiKeyHint": "API Key (auto-generated if empty)",
+    "referrer": "Referrer"
+  },
+  "referrers": {
+    "name": "Referrer Name",
+    "commissionRate": "Commission Rate",
+    "commissionRateLabel": "Commission Rate (0~1)"
+  },
+  "groupIndex": {
+    "title": "Group Workspace",
+    "welcome": "Welcome, {name}. ",
+    "groupIdLabel": "Group ID",
+    "employeeCount": "Current agent count",
+    "activityCount": "Activity count",
+    "activeSessions": "Active Sessions",
+    "activeSessionsSub": "Live active sessions",
+    "view": "View",
+    "monitor": "Monitor"
+  },
+  "groupEmployees": {
+    "noGroupBound": "You are not bound to any group and cannot manage group agents."
+  },
+  "groupActivities": {
+    "noGroupBound": "You are not bound to any group and cannot view group activities."
+  },
+  "groupSessions": {
+    "title": "Group Sessions",
+    "noGroupBound": "You are not bound to any group.",
+    "autoRefresh": "Active sessions auto-refresh every 5 seconds",
+    "transferTitle": "Transfer Session",
+    "transferTargetLabel": "Select receiving agent",
+    "noTransferTarget": "No other agents available in this group"
+  },
+  "page403": {
+    "title": "403 · Access Denied",
+    "desc": "Your account role does not have permission to access this page",
+    "backHome": "Back to Home"
   },
   "page_register": {
     "h4": "One Platform for Global Team",
@@ -36,7 +315,10 @@
     "New-on-our-platform": "New on our platform?",
     "Forgot-Password": "Forgot Password?",
     "Create-an-account": "Create an account",
-    "Remember-me": "Remember me"
+    "Remember-me": "Remember me",
+    "fillEmailPassword": "Please enter email and password",
+    "loginFailed": "Login failed",
+    "defaultAccount": "Default account: admin@local / admin123"
   },
   "page_admin": {
     "referrers": "Referrers",
@@ -60,25 +342,14 @@
     "sessions": "My Sessions",
     "session": "Session Workspace"
   },
-  "roles": {
-    "platform_admin": "Platform Admin",
-    "org_admin": "Org Admin",
-    "group_admin": "Group Admin",
-    "agent": "Agent"
-  },
-  "session": {
-    "status": {
-      "active": "Active",
-      "closed": "Closed",
-      "transferred": "Transferred"
-    },
-    "sender": {
-      "visitor": "Visitor",
-      "employee": "Agent",
-      "system": "System"
-    },
-    "transfer": "Transfer",
-    "close": "Close",
-    "send": "Send"
+  "menu": {
+    "dashboards": "Dashboards",
+    "analytics": "Analytics",
+    "apps_pages": "Apps & Pages",
+    "platform_admin": "Platform",
+    "org_admin": "Company",
+    "group_admin": "Team",
+    "my_work": "My Workspace",
+    "account": "Account"
   }
 }

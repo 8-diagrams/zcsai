@@ -1,45 +1,48 @@
 <script setup>
 import CrudTable from '@/components/CrudTable.vue'
 import { api } from '@/utils/api'
+import { useI18n } from 'vue-i18n'
 
-const headers = [
+const { t } = useI18n()
+
+const headers = computed(() => [
   { title: 'ID', key: 'id' },
-  { title: '公司名称', key: 'name' },
-  { title: '套餐', key: 'plan_type' },
+  { title: t('organizations.name'), key: 'name' },
+  { title: t('organizations.plan'), key: 'plan_type' },
   { title: 'API Key', key: 'api_key' },
-  { title: '代理商', key: 'referrer_id' },
-  { title: '创建时间', key: 'created_at' },
-]
+  { title: t('nav.referrers'), key: 'referrer_id' },
+  { title: t('common.createdAt'), key: 'created_at' },
+])
 
 const referrerOptions = ref([])
 onMounted(async () => {
   try {
     const list = await api.get('/api/referrers')
     referrerOptions.value = [
-      { title: '(无)', value: null },
+      { title: t('common.none'), value: null },
       ...list.map(r => ({ title: `${r.name} (${r.id})`, value: r.id })),
     ]
   } catch { /* ignore */ }
 })
 
 const formFields = computed(() => [
-  { key: 'name', label: '公司名称', required: true },
+  { key: 'name', label: t('organizations.name'), required: true },
   {
-    key: 'plan_type', label: '套餐', type: 'select',
+    key: 'plan_type', label: t('organizations.plan'), type: 'select',
     options: [
       { title: 'Free', value: 'free' },
       { title: 'Pro', value: 'pro' },
       { title: 'Enterprise', value: 'enterprise' },
     ],
   },
-  { key: 'api_key', label: 'API Key (留空自动生成)' },
-  { key: 'referrer_id', label: '归属代理商', type: 'select', options: referrerOptions.value },
+  { key: 'api_key', label: t('organizations.apiKeyHint') },
+  { key: 'referrer_id', label: t('organizations.referrer'), type: 'select', options: referrerOptions.value },
 ])
 </script>
 
 <template>
   <CrudTable
-    title="公司/租户"
+    :title="t('nav.organizations')"
     :headers="headers"
     :form-fields="formFields"
     :default-form="{ name: '', plan_type: 'free', api_key: '', referrer_id: null }"

@@ -34,7 +34,7 @@ const isPasswordVisible = ref(false)
 const submit = async () => {
   errorMsg.value = ''
   if (!form.value.email || !form.value.password) {
-    errorMsg.value = '请填写邮箱和密码'
+    errorMsg.value = t('page_login.fillEmailPassword')
     return
   }
   submitting.value = true
@@ -43,7 +43,7 @@ const submit = async () => {
     const redirect = route.query.redirect || '/'
     router.replace(redirect)
   } catch (e) {
-    errorMsg.value = e.detail || e.message || '登录失败'
+    errorMsg.value = e.detail || e.message || t('page_login.loginFailed')
   } finally {
     submitting.value = false
   }
@@ -135,7 +135,7 @@ const submit = async () => {
               cols="12"
               class="text-center text-base"
             >
-              <span>默认账号:admin@local / admin123</span>
+              <span>{{ t('page_login.defaultAccount') }}</span>
             </VCol>
           </VRow>
         </VForm>

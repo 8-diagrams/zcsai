@@ -2,30 +2,34 @@
 import CrudTable from '@/components/CrudTable.vue'
 import { api } from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 
-const headers = [
-  { title: '邮箱', key: 'email' },
-  { title: '昵称', key: 'display_name' },
-  { title: '角色', key: 'role' },
-  { title: '公司', key: 'org_id' },
-  { title: '组', key: 'group_id' },
-  { title: '坐席', key: 'employee_id' },
-  { title: '启用', key: 'is_active' },
-]
+const headers = computed(() => [
+  { title: t('users.email'), key: 'email' },
+  { title: t('users.displayName'), key: 'display_name' },
+  { title: t('users.role'), key: 'role' },
+  { title: t('common.company'), key: 'org_id' },
+  { title: t('common.group'), key: 'group_id' },
+  { title: t('nav.employees'), key: 'employee_id' },
+  { title: t('rules.enabled'), key: 'is_active' },
+])
 
-const orgOptions = ref([{ title: '(无)', value: null }])
-const groupOptions = ref([{ title: '(无)', value: null }])
-const employeeOptions = ref([{ title: '(无)', value: null }])
+const orgOptions = ref([{ title: t('common.none'), value: null }])
+const groupOptions = ref([{ title: t('common.none'), value: null }])
+const employeeOptions = ref([{ title: t('common.none'), value: null }])
 
 const roleOptions = computed(() => {
   const all = [
-    { title: '平台超管', value: 'platform_admin' },
-    { title: '公司管理员', value: 'org_admin' },
-    { title: '组管理员', value: 'group_admin' },
-    { title: '坐席', value: 'agent' },
+    { title: t('roles.platform_admin'), value: 'platform_admin' },
+    { title: t('roles.org_admin'), value: 'org_admin' },
+    { title: t('roles.group_admin'), value: 'group_admin' },
+    { title: t('roles.agent'), value: 'agent' },
   ]
+  // 组管理员只能建坐席账号; 平台超管全部; 公司管理员去掉平台超管
+  if (auth.isGroupAdmin) return all.slice(3)
   return auth.isPlatformAdmin ? all : all.slice(1)
 })
 
@@ -33,37 +37,51 @@ const loadOptions = async () => {
   try {
     if (auth.isPlatformAdmin) {
       const orgs = await api.get('/api/organizations')
-      orgOptions.value = [{ title: '(无)', value: null }, ...orgs.map(o => ({ title: o.name, value: o.id }))]
+      orgOptions.value = [{ title: t('common.none'), value: null }, ...orgs.map(o => ({ title: o.name, value: o.id }))]
     }
     if (auth.orgId || auth.isPlatformAdmin) {
       const targetOrg = auth.orgId || (orgOptions.value[1]?.value)
       if (targetOrg) {
+        // 组管理员只列本组坐席, 其余角色列全公司
+        const empUrl = auth.isGroupAdmin
+          ? `/api/orgs/${targetOrg}/employees?group_id=${auth.groupId}`
+          : `/api/orgs/${targetOrg}/employees`
         const [groups, emps] = await Promise.all([
           api.get(`/api/orgs/${targetOrg}/groups`),
-          api.get(`/api/orgs/${targetOrg}/employees`),
+          api.get(empUrl),
         ])
-        groupOptions.value = [{ title: '(无)', value: null }, ...groups.map(g => ({ title: g.name, value: g.id }))]
-        employeeOptions.value = [{ title: '(无)', value: null }, ...emps.map(e => ({ title: e.name, value: e.id }))]
+        groupOptions.value = [{ title: t('common.none'), value: null }, ...groups.map(g => ({ title: g.name, value: g.id }))]
+        employeeOptions.value = [{ title: t('common.none'), value: null }, ...emps.map(e => ({ title: e.name, value: e.id }))]
       }
     }
   } catch { /* ignore */ }
 }
 onMounted(loadOptions)
 
-const formFields = computed(() => [
-  { key: 'email', label: '邮箱', required: true, disableOnEdit: true },
-  { key: 'password', label: '密码 (编辑时留空则不变)' },
-  { key: 'display_name', label: '昵称' },
-  { key: 'role', label: '角色', type: 'select', options: roleOptions.value },
-  { key: 'org_id', label: '所属公司', type: 'select', options: orgOptions.value },
-  { key: 'group_id', label: '所属组', type: 'select', options: groupOptions.value },
-  { key: 'employee_id', label: '绑定坐席 (agent)', type: 'select', options: employeeOptions.value },
-  { key: 'is_active', label: '启用', type: 'switch' },
-])
+const formFields = computed(() => {
+  // 组管理员: org/group 由后端强制本组本公司, 隐藏这两个字段, 减少误操作
+  const base = [
+    { key: 'email', label: t('users.email'), required: true, disableOnEdit: true },
+    { key: 'password', label: t('users.passwordHint') },
+    { key: 'display_name', label: t('users.displayName') },
+    { key: 'role', label: t('users.role'), type: 'select', options: roleOptions.value },
+  ]
+  if (!auth.isGroupAdmin) {
+    base.push(
+      { key: 'org_id', label: t('users.orgLabel'), type: 'select', options: orgOptions.value },
+      { key: 'group_id', label: t('common.groupLabel'), type: 'select', options: groupOptions.value },
+    )
+  }
+  base.push(
+    { key: 'employee_id', label: t('users.bindEmployee'), type: 'select', options: employeeOptions.value },
+    { key: 'is_active', label: t('rules.enabled'), type: 'switch' },
+  )
+  return base
+})
 
 const cleanForCreate = (body) => {
   const out = { ...body }
-  if (!out.password) throw new Error('请填写密码')
+  if (!out.password) throw new Error(t('users.pleaseEnterPassword'))
   return out
 }
 const cleanForUpdate = (body) => {
@@ -76,7 +94,7 @@ const cleanForUpdate = (body) => {
 
 <template>
   <CrudTable
-    title="用户账号"
+    :title="t('nav.users')"
     :headers="headers"
     :form-fields="formFields"
     :default-form="{ email: '', password: '', display_name: '', role: 'agent', org_id: null, group_id: null, employee_id: null, is_active: true }"

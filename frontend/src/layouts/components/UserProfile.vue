@@ -1,16 +1,15 @@
 <script setup>
 import avatar1 from '@images/avatars/avatar-1.png'
 import { useAuthStore } from '@/stores/authStore'
+import { useI18n } from 'vue-i18n'
 
 const auth = useAuthStore()
 const router = useRouter()
+const { t } = useI18n()
 
-const roleLabel = computed(() => ({
-  platform_admin: '平台超管',
-  org_admin: '公司管理员',
-  group_admin: '组管理员',
-  agent: '坐席',
-}[auth.role] || '未登录'))
+const roleLabel = computed(() =>
+  auth.role ? t(`roles.${auth.role}`) : t('user.notLoggedIn'),
+)
 
 const handleLogout = () => {
   auth.logout()
@@ -59,7 +58,7 @@ const handleLogout = () => {
             </template>
 
             <VListItemTitle class="font-weight-semibold">
-              {{ auth.displayName || '未登录' }}
+              {{ auth.displayName || t('user.notLoggedIn') }}
             </VListItemTitle>
             <VListItemSubtitle>{{ roleLabel }}</VListItemSubtitle>
           </VListItem>
@@ -69,7 +68,7 @@ const handleLogout = () => {
             <template #prepend>
               <VIcon class="me-2" icon="ri-user-line" size="22" />
             </template>
-            <VListItemTitle>账户设置</VListItemTitle>
+            <VListItemTitle>{{ t('nav.accountSettings') }}</VListItemTitle>
           </VListItem>
 
           <VDivider class="my-2" />
@@ -78,7 +77,7 @@ const handleLogout = () => {
             <template #prepend>
               <VIcon class="me-2" icon="ri-logout-box-r-line" size="22" />
             </template>
-            <VListItemTitle>退出登录</VListItemTitle>
+            <VListItemTitle>{{ t('general.Logout') }}</VListItemTitle>
           </VListItem>
         </VList>
       </VMenu>

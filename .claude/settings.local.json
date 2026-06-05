@@ -16,7 +16,8 @@
       "Bash(python -m py_compile models.py main.py router_admin.py RuleEngine.py)",
       "Bash(timeout 180 npm run build)",
       "Bash(npm run *)",
-      "Bash(cd *)"
+      "Bash(cd *)",
+      "Bash(npm *)"
     ]
   }
 }
