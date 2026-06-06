@@ -1,0 +1,59 @@
+# uchat.sohoclouds.com 生产编排
+# 启动: docker compose --env-file .env.production up -d --build
+#   --env-file 让 compose 也从 .env.production 读变量插值 (如 MYSQL_ROOT_PASSWORD),
+#   与 backend 容器共用同一份配置, 避免 DB 密码两处维护不一致。
+# 前置: 写好 .env.production (后端+DB) + frontend/dist 已构建 + TLS 证书就位 (见 DEPLOY.md)
+
+services:
+  mysql:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set in shell env or .env}
+      MYSQL_DATABASE: saas_agent_db
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      # 首次启动自动执行建表脚本 (库已存在则 CREATE IF NOT EXISTS 安全跳过)
+      - ./database.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    # 仅内网, 不对外映射端口
+    expose:
+      - "3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: .
+    restart: unless-stopped
+    volumes:
+      # 把生产配置挂成 /app/.env, 让 config.py 的 pydantic (env_file=".env") 直接读它。
+      # 比 compose 的 env_file 指令更稳: 正确剥引号、与本地开发加载方式一致、文件不进镜像更安全。
+      - ./.env.production:/app/.env:ro
+      # 持久化: 嵌入式向量库 + mem0 记忆 + 上传媒体 (容器重建不丢)
+      - ./data/qdrant_data:/app/qdrant_data
+      - ./data/memory_db:/app/memory_db
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    expose:
+      - "1081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/uchat.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      # Let's Encrypt 证书 + ACME 验证目录
+      - ./data/letsencrypt:/etc/letsencrypt:ro
+      - ./data/certbot-www:/var/www/certbot
+    depends_on:
+      - backend

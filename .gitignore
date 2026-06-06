@@ -1,0 +1,27 @@
+# 密钥与环境配置 (绝不进 git)
+.env
+.env.*
+!.env.production.example
+frontend/.env.local
+frontend/.env.production
+
+# 运行期 / 部署持久数据
+data/
+uploads/
+qdrant_data/
+memory_db/
+logs/
+frontend/dist/
+
+# Python
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# 前端依赖
+frontend/node_modules/
+
+# 杂项
+.DS_Store

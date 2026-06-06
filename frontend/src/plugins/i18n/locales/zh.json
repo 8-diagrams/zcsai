@@ -126,7 +126,7 @@
     "welcomeMessageShort": "欢迎语",
     "closingMessage": "结束语",
     "globalGuideline": "全局基础指引",
-    "stagesConfig": "阶段配置 (JSON: {\"破冰\":\"...\",\"探求\":\"...\"})",
+    "stagesConfig": "阶段配置 (JSON 对象, 键为阶段名)",
     "manageRules": "管理事件规则",
     "invalidStagesJson": "阶段配置 JSON 不合法",
     "pleaseSelectKb": "请选择知识库",

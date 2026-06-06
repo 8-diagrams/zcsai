@@ -1,7 +1,7 @@
 -- =========================================================
 -- SaaS AI Agent Hub 核心数据库初始化脚本 (终极版)
 -- =========================================================
-
+SET NAMES utf8mb4;
 -- 1. 创建数据库并设置字符集为 utf8mb4 (完美支持全球语言和 Emoji 表情)
 CREATE DATABASE IF NOT EXISTS saas_agent_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE saas_agent_db;
