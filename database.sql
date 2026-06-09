@@ -139,6 +139,35 @@ CREATE TABLE activities (
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+ALTER TABLE activities
+ADD COLUMN global_guideline TEXT
+COLLATE utf8mb4_unicode_ci
+COMMENT '全局基础指引 (作用于该活动所有阶段的底层AI系统提示词)'
+AFTER stages_config;
+
+CREATE TABLE `activity_kb_mounts` (
+  `activity_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '活动剧本ID',
+  `kb_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '知识库ID',
+  `priority` int(11) NOT NULL DEFAULT '0' COMMENT '挂载权重 (数值越大优先级越高，用于解决知识冲突)',
+  `mount_guideline` text COLLATE utf8mb4_unicode_ci COMMENT '挂载维度的特别指引 (当该活动挂载此库时特有的AI提示词，可覆盖或补充主库指引)',
+  PRIMARY KEY (`activity_id`,`kb_id`),
+  KEY `idx_kb_id` (`kb_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动与知识库挂载关系表'
+
+CREATE TABLE `knowledge_bases` (
+  `id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '知识库全局唯一ID',
+  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '知识库名称 (如: 双十一退款政策)',
+  `org_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '所属公司/组织ID',
+  `group_id` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '所属分组ID (为空则代表是公司级全局库)',
+  `is_shared_to_groups` tinyint(1) NOT NULL DEFAULT '0' COMMENT '公司级库是否授权给所有子 Group 使用 (1:是, 0:否)',
+  `vector_collection_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '对应向量数据库 (Qdrant/Milvus) 中的集合名称',
+  `usage_guideline` text COLLATE utf8mb4_unicode_ci COMMENT '使用指引/元提示词 (如: 该库的话术语气要求、适用场景、禁用词等)',
+  PRIMARY KEY (`id`),
+  KEY `idx_org_id` (`org_id`),
+  KEY `idx_group_id` (`group_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='多租户知识库管理表'
+
+
 -- 2. 修改 Sessions 表，增加 activity 绑定和当前阶段状态
 ALTER TABLE sessions 
 ADD COLUMN activity_id VARCHAR(50) NULL COMMENT '当前绑定的活动剧本' AFTER group_id,
@@ -150,7 +179,24 @@ ALTER TABLE messages
 ADD COLUMN activity_id VARCHAR(50) NULL COMMENT '冗余: 活动ID' AFTER group_id,
 ADD INDEX idx_org_activity (org_id, activity_id); -- 性能起飞：按公司和活动查聊天记录
 
+-- 1) sessions: 访客昵称 + email
+ALTER TABLE sessions
+    ADD COLUMN visitor_nickname VARCHAR(100) NULL COMMENT '访客昵称' AFTER visitor_uid,
+    ADD COLUMN visitor_email VARCHAR(120) NULL COMMENT '访客邮箱' AFTER visitor_nickname;
 
+-- 2) messages: 发出时的访客 profile 快照
+ALTER TABLE messages
+    ADD COLUMN visitor_nickname_at_send VARCHAR(100) NULL COMMENT '发出时访客昵称' AFTER llm_decision_raw,
+    ADD COLUMN visitor_email_at_send VARCHAR(120) NULL COMMENT '发出时访客邮箱' AFTER visitor_nickname_at_send,
+    ADD COLUMN visitor_platform_at_send VARCHAR(20) NULL COMMENT '发出时访客所属平台' AFTER visitor_email_at_send,
+    ADD COLUMN visitor_platform_id_at_send VARCHAR(100) NULL COMMENT '发出时访客平台ID' AFTER visitor_platform_at_send;
+    
+ALTER TABLE messages
+    ADD COLUMN source_ts DOUBLE NULL COMMENT '源平台消息时间戳(epoch秒); 历史回传排序用' AFTER fired_by_rule_id,
+    ADD COLUMN source_msg_id VARCHAR(128) NULL COMMENT '源平台消息唯一ID(预留); 历史回传去重优先键' AFTER source_ts,
+    ADD INDEX idx_messages_source_ts (source_ts),
+    ADD INDEX idx_messages_source_msg_id (source_msg_id);
+    
 
 
 -- 1. 插入一条双十一活动剧本 (stages_config 与 stages.json 的 6 阶段定义对齐)
