@@ -193,3 +193,8 @@ await websocket.send_text(final_reply)
  
 
 
+
+
+ 需要加特征： session 和 message 表， 需要增加访客的 昵称、email、所属平台、平台id 等profile 属性， 方便后续联系访客。 请修改
+
+
