@@ -3,7 +3,14 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, Response 
 from pydantic import BaseModel
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from openai import AsyncOpenAI
 from loguru import logger
@@ -17,7 +24,7 @@ from models import ActivityKBMount, KnowledgeBase, Activity, User
 from sqlalchemy.future import select
 
 # 共享依赖: DB 会话 + 当前登录用户 + 同 org 校验
-from deps import get_db, get_current_user, require_min_role, assert_same_org
+from deps import get_db, get_current_user, require_min_role, assert_same_group, assert_same_org
 
 router = APIRouter()
 
@@ -288,12 +295,16 @@ async def mount_knowledge_base(
         if not kb_obj:
             raise HTTPException(status_code=404, detail="找不到该知识库")
         assert_same_org(user, kb_obj.org_id)
+        if user.role in ("group_admin", "agent") and user.group_id:
+            if kb_obj.group_id != user.group_id and not kb_obj.is_shared_to_groups:
+                raise HTTPException(status_code=403, detail="禁止挂载其他组未共享的知识库")
 
         act_res = await db.execute(select(Activity).where(Activity.id == req.activity_id))
         act_obj = act_res.scalar_one_or_none()
         if not act_obj:
             raise HTTPException(status_code=404, detail="找不到该活动")
         assert_same_org(user, act_obj.org_id)
+        assert_same_group(user, act_obj.group_id)
 
         # 第二步：查询是否已经挂载过了？
         mount_stmt = select(ActivityKBMount).where(
@@ -319,6 +330,21 @@ async def mount_knowledge_base(
             action_msg = "挂载知识库成功"
 
         await db.commit() # 正式落库
+        logger.info(
+            "📚 KB_MOUNT {} activity={} activity_org={} activity_group={} kb={} kb_org={} kb_group={} kb_shared={} priority={} user={} user_role={} user_group={}",
+            action_msg,
+            req.activity_id,
+            act_obj.org_id,
+            act_obj.group_id,
+            req.kb_id,
+            kb_obj.org_id,
+            kb_obj.group_id,
+            kb_obj.is_shared_to_groups,
+            req.priority,
+            user.id,
+            user.role,
+            user.group_id,
+        )
         
         return {
             "status": "success", 
@@ -333,4 +359,3 @@ async def mount_knowledge_base(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"挂载失败: {str(e)}")
-        

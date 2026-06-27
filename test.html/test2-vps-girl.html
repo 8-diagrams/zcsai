@@ -135,18 +135,19 @@
     const activity_id = "act_e30a89dc22";
     const empId = "emp_06e078a61f";     // 对应数据库里的 AI 销售 ID
     //const sessionId = "vps_001";   // 对应测试的会话 ID
-    const visitorUid = "GameGirl11";   // Mem0 用来隔离不同访客记忆的唯一 ID
+    const visitorUid = "GameGirl14";   // Mem0 用来隔离不同访客记忆的唯一 ID
     let sessionId = activity_id+":"+visitorUid;
     let nickName = 'Liu Da'
     let email = 'liuda@gmail.com'
     let ws;
+    let host = '127.0.0.1:1081'
     
     // ==========================================
     // 2. WebSocket 连接逻辑
     // ==========================================
     function connectWS() {
         // 连接到 FastAPI 后端
-        ws = new WebSocket(`ws://127.0.0.1:1081/ws/${activity_id}/${visitorUid}`);
+        ws = new WebSocket(`ws://${host}/ws/${activity_id}/${visitorUid}`);
         
         ws.onopen = () => {
             document.getElementById('ws-status').innerText = "🟢 插件已成功连接 AI 大脑";

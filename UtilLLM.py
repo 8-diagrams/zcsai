@@ -6,6 +6,21 @@ from loguru import logger
 # 严格规约的客户情绪枚举值 (与 models.CustomerEmotion 必须一致)
 ALLOWED_EMOTIONS = {"calm", "joy", "excited", "hesitation", "impatience", "anger"}
 
+
+def _fallback_reply_for_language(language: str = None) -> str:
+    if not language:
+        return "抱歉，刚刚系统网络走神了，能麻烦您再说一遍吗？"
+    lang = language.lower()
+    if lang.startswith("zh-hk") or lang.startswith("zh-tw") or lang.startswith("zh-mo"):
+        return "抱歉，剛才系統網絡有點不穩，可以麻煩您再說一次嗎？"
+    if lang.startswith("en"):
+        return "Sorry, the system had a brief network issue. Could you please say that again?"
+    if lang.startswith("ja"):
+        return "すみません、先ほどシステムの接続が少し不安定でした。もう一度お聞かせいただけますか？"
+    if lang.startswith("ko"):
+        return "죄송합니다. 방금 시스템 연결이 잠시 불안정했습니다. 다시 한 번 말씀해 주시겠어요?"
+    return "抱歉，刚刚系统网络走神了，能麻烦您再说一遍吗？"
+
 async def generate_ai_reply_with_retry(
     session_id,
     llm_client,
@@ -23,6 +38,7 @@ async def generate_ai_reply_with_retry(
     memory_context: str,
     # --- 素材库 (可选): [{id, kind, title, description}, ...] ---
     material_catalog: list = None,
+    forced_reply_language: str = None,
     # --- 配置 ---
     max_retries: int = 3
 ) -> dict:
@@ -33,11 +49,24 @@ async def generate_ai_reply_with_retry(
     # 1. 内部动态组装 System Prompt
     # ==========================================
     # UtilLLM.py 核心修改片段
+    if forced_reply_language:
+        language_requirement = (
+            f"【极其重要】：本次会话已经由客户端锁定回复语言为 `{forced_reply_language}`。"
+            f"无论访客最新消息使用什么语言，你最终生成的 `reply_content` 都必须严格使用 `{forced_reply_language}` "
+            "对应的语言/地区书写习惯。`detected_language` 字段也必须返回这个锁定值。"
+        )
+        reply_content_schema = f"你想对访客说的话（必须严格使用客户端锁定语言 {forced_reply_language}）"
+        detected_language_schema = f"必须返回客户端锁定的语言代码 '{forced_reply_language}'"
+    else:
+        language_requirement = "【极其重要】：请自动检测访客最新消息的语言种类。你最终生成的 `reply_content` 必须严格使用与访客完全相同的语言进行回复（例如：访客用英文，你的回复也必须全是英文；访客用繁体中文，你必须用繁体中文）。"
+        reply_content_schema = "你想对访客说的话（必须使用与访客相同的语言！）"
+        detected_language_schema = "你检测到的访客输入语言（如 'zh-CN', 'en-US', 'es', 'ja' 等）"
+
     system_prompt_dict = {
         "role_definition": f"你是一个顶级的金牌销售，当前正在执行【{activity_name}】任务。请严格遵守以下全局红线：{global_guideline}",
         
         # 🆕 核心新增：强力语言跟随指令
-        "language_requirement": "【极其重要】：请自动检测访客最新消息的语言种类。你最终生成的 `reply_content` 必须严格使用与访客完全相同的语言进行回复（例如：访客用英文，你的回复也必须全是英文；访客用繁体中文，你必须用繁体中文）。",
+        "language_requirement": language_requirement,
         
         "current_task_guideline": stage_guideline,
         "kb_special_instructions": kb_instructions,
@@ -47,12 +76,12 @@ async def generate_ai_reply_with_retry(
 
         "output_requirements": "你必须且只能返回一个合法的 JSON 对象，严禁输出任何多余的解释文本或 Markdown 标记。其中 customer_emotion 字段具有致命的业务约束，严禁生成不在允许列表中的任何词汇！",
         "output_schema_definition": {
-            "reply_content": "你想对访客说的话（必须使用与访客相同的语言！）",
+            "reply_content": reply_content_schema,
             "next_stage": "你裁判得出的下一步阶段ID（必须是上述允许的合法值）",
             "stage_reason": "你判断流转（或保持）该阶段的简短内部理由，用于系统复盘",
             "extracted_tags": ["高意向", "在意价格", "同行比价"],
             # 🆕 核心新增：让大模型顺手把语种报告给后端
-            "detected_language": "你检测到的访客输入语言（如 'zh-CN', 'en-US', 'es', 'ja' 等）",
+            "detected_language": detected_language_schema,
             # 🚨 严格枚举：基于访客最新消息的用词和语气判断；不允许新造词。
             "customer_emotion": "必须且只能是以下英文枚举值之一: [calm, joy, excited, hesitation, impatience, anger]",
             # 🆕 素材选择：从下方 material_catalog 中按需选 0~N 个素材的 id 一起发给访客；不需要就给空数组。严禁编造不在清单里的 id。
@@ -110,6 +139,9 @@ async def generate_ai_reply_with_retry(
             if not ai_decision["reply_content"].strip():
                 raise ValueError("生成了空白回复")
 
+            if forced_reply_language:
+                ai_decision["detected_language"] = forced_reply_language
+
             # selected_material_ids 容错: 缺省/非 list 一律归一为 [] (不因此 raise, 保持鲁棒)
             sel = ai_decision.get("selected_material_ids")
             if not isinstance(sel, list):
@@ -131,10 +163,10 @@ async def generate_ai_reply_with_retry(
     # ==========================================
     logger.error(f"Session {session_id} LLM 🚨 已达到最大重试次数 ({max_retries})，触发安全兜底！")
     return {
-        "reply_content": "抱歉，刚刚系统网络走神了，能麻烦您再说一遍吗？",
+        "reply_content": _fallback_reply_for_language(forced_reply_language),
         "next_stage": current_stage,
         "stage_reason": "大模型多次生成异常，触发系统安全拦截",
         "extracted_tags": [],
-        "detected_language": "unknown",
+        "detected_language": forced_reply_language or "unknown",
         "customer_emotion": "calm",  # 安全默认值：calm 不会触发任何情绪类规则
     }

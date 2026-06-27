@@ -13,6 +13,7 @@ from loguru import logger
 import traceback
 import time
 import random
+import re
 from typing import Optional
 from UtilLLM import generate_ai_reply_with_retry
 
@@ -36,6 +37,37 @@ logger.remove()
 logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>", level="INFO")
 # 添加文件日志（持久化，方便查昨天的Bug）
 logger.add("logs/agent_server.log", rotation="10 MB", level="DEBUG")
+
+
+_LOCALE_CODE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+
+
+def normalize_locale_code(locale: Optional[str]) -> Optional[str]:
+    if not locale:
+        return None
+    parts = locale.strip().replace("_", "-").split("-")
+    if not parts or not parts[0]:
+        return None
+    normalized = [parts[0].lower()]
+    for part in parts[1:]:
+        if len(part) == 2 and part.isalpha():
+            normalized.append(part.upper())
+        elif len(part) == 4 and part.isalpha():
+            normalized.append(part.title())
+        else:
+            normalized.append(part)
+    candidate = "-".join(normalized)
+    return candidate if _LOCALE_CODE_RE.match(candidate) else None
+
+
+def parse_activity_id_with_locale(raw_activity_id: str) -> tuple[str, Optional[str]]:
+    if ":" not in raw_activity_id:
+        return raw_activity_id, None
+    activity_id, locale_part = raw_activity_id.rsplit(":", 1)
+    forced_locale = normalize_locale_code(locale_part)
+    if activity_id and forced_locale:
+        return activity_id, forced_locale
+    return raw_activity_id, None
 
 
 
@@ -263,10 +295,14 @@ async def match_employee_for_activity(db, activity: Activity, log) -> Optional[E
 
 async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str, visitor_uid: str, activity_id: str,
                            visitor_nickname: Optional[str] = None, visitor_email: Optional[str] = None,
-                           visitor_source_ts: Optional[float] = None, visitor_source_msg_id: Optional[str] = None):
+                           visitor_source_ts: Optional[float] = None, visitor_source_msg_id: Optional[str] = None,
+                           forced_reply_language: Optional[str] = None):
     # 为当前 Session 创建一个独立的日志标识（Logger Context）
     log = logger.bind(session_id=session_id, visitor=visitor_uid, activity=activity_id, conn=connection_id)
-    log.info(f"🚀 [新任务] 开始处理 | activity={activity_id} visitor={visitor_uid} session={session_id} text='{visitor_msg}'")
+    log.info(
+        f"🚀 [新任务] 开始处理 | activity={activity_id} forced_lang={forced_reply_language or '-'} "
+        f"visitor={visitor_uid} session={session_id} text='{visitor_msg}'"
+    )
     metrics = {
             "A_DB_Session": 0,
             "B_DB_Activity": 0,
@@ -518,6 +554,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
                 kb_instructions=final_kb_instructions,
                 memory_context=memory_context,
                 material_catalog=material_catalog,
+                forced_reply_language=forced_reply_language,
                 max_retries=3
             )
             
@@ -719,6 +756,7 @@ async def process_history_import(
     activity_id: str,
     platform: Optional[str],
     raw_messages: list,
+    forced_reply_language: Optional[str] = None,
 ):
     """下游平台回传历史聊天记录(action=report_history)。
 
@@ -731,7 +769,10 @@ async def process_history_import(
     direction 映射: in -> visitor, out/self -> employee。
     """
     log = logger.bind(session_id=session_id, visitor=visitor_uid, activity=activity_id, conn=connection_id)
-    log.info(f"📜 [历史导入] 收到 {len(raw_messages)} 条历史消息 platform={platform}")
+    log.info(
+        f"📜 [历史导入] 收到 {len(raw_messages)} 条历史消息 platform={platform} "
+        f"forced_lang={forced_reply_language or '-'}"
+    )
 
     # 规整 + 跳过空文本; 保留原始顺序
     items = []
@@ -887,6 +928,7 @@ async def process_history_import(
             None,
             last["source_ts"],
             last["source_msg_id"],
+            forced_reply_language,
         )
 
 
@@ -921,12 +963,22 @@ app.mount("/media", StaticFiles(directory=settings.UPLOAD_DIR), name="media")
 #router
 # URL: /ws/{activity_id}/{visitor_uid}
 #   - activity_id 决定剧本和 org/group/employee 归属（后端反查）
+#   - activity_id 可选追加语言码: act123:zh-HK 表示按 act123 查活动，但本连接回复锁定 zh-HK
 #   - visitor_uid 是访客的稳定唯一标识（前端 cookie/localStorage 持久化）
 # connection_id = {activity_id}_{visitor_uid}，天然按访客隔离，避免多访客冲突
 @app.websocket("/ws/{activity_id}/{visitor_uid}")
 async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid: str, background_tasks: BackgroundTasks):
-    connection_id = f"{activity_id}_{visitor_uid}"
-    logger.info(f"🔌 [WS Connect] activity={activity_id} visitor={visitor_uid} conn={connection_id}")
+    raw_activity_id = activity_id
+    resolved_activity_id, forced_reply_language = parse_activity_id_with_locale(raw_activity_id)
+    connection_id = f"{raw_activity_id}_{visitor_uid}"
+    if ":" in raw_activity_id and forced_reply_language is None:
+        logger.warning(
+            f"⚠️ [WS Connect] activity={raw_activity_id} 包含 ':' 但末段不是合法语言码，将按完整 activity_id 处理"
+        )
+    logger.info(
+        f"🔌 [WS Connect] raw_activity={raw_activity_id} activity={resolved_activity_id} "
+        f"forced_lang={forced_reply_language or '-'} visitor={visitor_uid} conn={connection_id}"
+    )
     await manager.connect(websocket, connection_id)
 
     try:
@@ -958,9 +1010,10 @@ async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid
                         payload["session_id"],
                         payload["text"],
                         visitor_uid,
-                        activity_id,
+                        resolved_activity_id,
                         visitor_nickname,
                         visitor_email,
+                        forced_reply_language=forced_reply_language,
                     )
                 )
             elif data.get("action") == "report_history":
@@ -979,9 +1032,10 @@ async def websocket_endpoint(websocket: WebSocket, activity_id: str, visitor_uid
                         connection_id,
                         payload["session_id"],
                         visitor_uid,
-                        activity_id,
+                        resolved_activity_id,
                         payload.get("platform"),
                         payload.get("messages") or [],
+                        forced_reply_language,
                     )
                 )
             else:
@@ -1037,5 +1091,3 @@ async def agent_websocket_endpoint(websocket: WebSocket, employee_id: str, token
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-    
