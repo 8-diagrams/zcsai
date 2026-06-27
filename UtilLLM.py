@@ -21,6 +21,13 @@ def _fallback_reply_for_language(language: str = None) -> str:
         return "죄송합니다. 방금 시스템 연결이 잠시 불안정했습니다. 다시 한 번 말씀해 주시겠어요?"
     return "抱歉，刚刚系统网络走神了，能麻烦您再说一遍吗？"
 
+
+def _count_words(text: str) -> int:
+    if not text:
+        return 0
+    return len([part for part in text.strip().split() if part])
+
+
 async def generate_ai_reply_with_retry(
     session_id,
     llm_client,
@@ -49,6 +56,7 @@ async def generate_ai_reply_with_retry(
     # 1. 内部动态组装 System Prompt
     # ==========================================
     # UtilLLM.py 核心修改片段
+    visitor_word_count = _count_words(visitor_msg)
     if forced_reply_language:
         language_requirement = (
             f"【极其重要】：本次会话已经由客户端锁定回复语言为 `{forced_reply_language}`。"
@@ -57,6 +65,13 @@ async def generate_ai_reply_with_retry(
         )
         reply_content_schema = f"你想对访客说的话（必须严格使用客户端锁定语言 {forced_reply_language}）"
         detected_language_schema = f"必须返回客户端锁定的语言代码 '{forced_reply_language}'"
+    elif visitor_word_count < 5:
+        language_requirement = (
+            f"【重要】：访客最新消息少于 5 个单词（当前约 {visitor_word_count} 个），不要仅凭这条短消息切换回复语言。"
+            "请沿用当前会话/活动上下文中已经建立的主要语言；如果上下文无法判断，使用中文简体回复。"
+        )
+        reply_content_schema = "你想对访客说的话（短消息场景不要因访客最新消息而切换语言）"
+        detected_language_schema = "短消息场景下返回你实际沿用的回复语言代码（如 'zh-CN', 'en-US' 等）"
     else:
         language_requirement = "【极其重要】：请自动检测访客最新消息的语言种类。你最终生成的 `reply_content` 必须严格使用与访客完全相同的语言进行回复（例如：访客用英文，你的回复也必须全是英文；访客用繁体中文，你必须用繁体中文）。"
         reply_content_schema = "你想对访客说的话（必须使用与访客相同的语言！）"

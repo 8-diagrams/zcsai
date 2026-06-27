@@ -6,7 +6,7 @@
 
 services:
   mysql:
-    image: mysql:8
+    image: mysql:5.7
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set in shell env or .env}
@@ -25,22 +25,38 @@ services:
       timeout: 5s
       retries: 10
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    expose:
+      - "6333"
+      - "6334"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: .
     restart: unless-stopped
+    environment:
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
     volumes:
       # 把生产配置挂成 /app/.env, 让 config.py 的 pydantic (env_file=".env") 直接读它。
       # 比 compose 的 env_file 指令更稳: 正确剥引号、与本地开发加载方式一致、文件不进镜像更安全。
       - ./.env.production:/app/.env:ro
-      # 持久化: 嵌入式向量库 + mem0 记忆 + 上传媒体 (容器重建不丢)
-      - ./data/qdrant_data:/app/qdrant_data
-      - ./data/memory_db:/app/memory_db
+      # 持久化: 上传媒体 + 日志。向量库/记忆由独立 qdrant 服务持久化。
       - ./uploads:/app/uploads
       - ./logs:/app/logs
     expose:
       - "1081"
     depends_on:
       mysql:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
 
   nginx:

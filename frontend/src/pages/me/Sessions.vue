@@ -29,15 +29,6 @@ const reload = async ({ silent = false } = {}) => {
 onMounted(() => reload())
 watch(statusFilter, () => reload())
 
-const autoRefresh = ref(true)
-let timer = null
-onMounted(() => {
-  timer = setInterval(() => {
-    if (autoRefresh.value && statusFilter.value === 'active') reload({ silent: true })
-  }, 5000)
-})
-onUnmounted(() => timer && clearInterval(timer))
-
 const open = (s) => router.push(`/me/session/${s.id}`)
 const fmtTime = (t) => t ? new Date(t).toLocaleString() : ''
 const statusColor = (s) => ({ active: 'success', closed: 'default', transferred: 'warning' }[s] || 'default')
@@ -49,15 +40,6 @@ const statusColor = (s) => ({ active: 'success', closed: 'default', transferred:
       <VCardItem>
         <VCardTitle>{{ t('nav.mySessions') }} <VChip size="small" class="ms-2">{{ sessions.length }}</VChip></VCardTitle>
         <template #append>
-          <VSwitch
-            v-model="autoRefresh"
-            :label="t('meSession.autoRefresh')"
-            color="primary"
-            density="compact"
-            hide-details
-            inset
-            class="me-3"
-          />
           <VSelect
             v-model="statusFilter"
             :items="statusOptions"

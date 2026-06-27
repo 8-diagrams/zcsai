@@ -10,6 +10,14 @@ class Settings(BaseSettings):
     MEMORY_DB_PATH: str = "./memory_db"
     DEBUG_MODE: bool = False
     LLM_EMBEDDING_MODEL: str
+
+    # Qdrant 独立服务配置。生产建议设置 QDRANT_URL=http://qdrant:6333。
+    # 未设置 QDRANT_URL/HOST 时保留本地 path 模式，兼容旧的本地开发环境。
+    QDRANT_URL: str = ""
+    QDRANT_HOST: str = ""
+    QDRANT_PORT: int = 6333
+    QDRANT_API_KEY: str = ""
+    QDRANT_ON_DISK: bool = False
     QDRANT_DATA_PATH: str = "./qdrant_data"
 
     # JWT / RBAC
@@ -30,6 +38,26 @@ class Settings(BaseSettings):
 
     # 指定从 .env 文件读取
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    def qdrant_client_config(self) -> dict:
+        cfg = {"check_compatibility": False}
+        if self.QDRANT_API_KEY:
+            cfg["api_key"] = self.QDRANT_API_KEY
+        if self.QDRANT_URL:
+            cfg["url"] = self.QDRANT_URL
+        elif self.QDRANT_HOST:
+            cfg["host"] = self.QDRANT_HOST
+            cfg["port"] = self.QDRANT_PORT
+        else:
+            cfg["path"] = self.QDRANT_DATA_PATH
+        return cfg
+
+    def qdrant_mem0_config(self) -> dict:
+        cfg = self.qdrant_client_config()
+        if "path" in cfg:
+            cfg["path"] = self.MEMORY_DB_PATH
+        cfg["on_disk"] = self.QDRANT_ON_DISK
+        return cfg
 
 
 def to_public_url(url: str) -> str:
