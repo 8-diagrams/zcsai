@@ -218,6 +218,7 @@ class KnowledgeBase(Base):
     
     # 核心：使用指引/元提示词
     usage_guideline = Column(Text, nullable=True, comment="该库的话术语气要求、适用场景等")
+    raw_text = Column(Text, nullable=True, comment="用户输入的知识库原文")
     
     # SaaS 租户隔离
     org_id = Column(String(50), index=True, comment="所属公司ID")

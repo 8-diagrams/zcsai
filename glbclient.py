@@ -13,7 +13,7 @@ llm_client = AsyncOpenAI(
 )
 
 # ========================================================
-# 全局向量数据库客户端 (单例)
+# 全局向量数据库客户端
 # ========================================================
-# 彻底解决 SQLite/RocksDB 本地文件被反锁 (Database is locked) 的问题。
-qdrant_client = AsyncQdrantClient(path=settings.QDRANT_DATA_PATH)
+# 生产环境通过 QDRANT_URL/HOST 连接独立 Qdrant 服务; 本地未配置时兼容旧 path 模式。
+qdrant_client = AsyncQdrantClient(**settings.qdrant_client_config())

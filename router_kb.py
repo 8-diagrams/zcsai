@@ -106,7 +106,8 @@ async def create_knowledge_base(
             org_id=req.org_id,
             group_id=req.group_id,
             is_shared_to_groups=req.is_shared_to_groups,
-            vector_collection_name=collection_name
+            vector_collection_name=collection_name,
+            raw_text=req.raw_text,
         )
         db.add(new_kb)
         await db.commit()
@@ -182,6 +183,10 @@ async def append_knowledge(
             collection_name=kb.vector_collection_name, # 直接使用 MySQL 里记录的集合名
             points=points
         )
+
+        old_raw_text = (kb.raw_text or "").strip()
+        kb.raw_text = f"{old_raw_text}\n\n{req.raw_text}".strip() if old_raw_text else req.raw_text
+        await db.commit()
         
         return {
             "status": "success", 
@@ -264,6 +269,9 @@ async def replace_knowledge(
             collection_name=kb.vector_collection_name,
             points=points
         )
+
+        kb.raw_text = req.new_raw_text
+        await db.commit()
         
         return {
             "status": "success", 

@@ -162,6 +162,7 @@ CREATE TABLE `knowledge_bases` (
   `is_shared_to_groups` tinyint(1) NOT NULL DEFAULT '0' COMMENT '公司级库是否授权给所有子 Group 使用 (1:是, 0:否)',
   `vector_collection_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '对应向量数据库 (Qdrant/Milvus) 中的集合名称',
   `usage_guideline` text COLLATE utf8mb4_unicode_ci COMMENT '使用指引/元提示词 (如: 该库的话术语气要求、适用场景、禁用词等)',
+  `raw_text` text COLLATE utf8mb4_unicode_ci COMMENT '用户输入的知识库原文',
   PRIMARY KEY (`id`),
   KEY `idx_org_id` (`org_id`),
   KEY `idx_group_id` (`group_id`)
@@ -412,5 +413,4 @@ CREATE TABLE materials (
     INDEX idx_materials_group (group_id),
     INDEX idx_materials_activity (activity_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 

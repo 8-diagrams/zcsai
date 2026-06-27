@@ -1,14 +1,18 @@
 # router_admin.py — SaaS 管理后台的全部 CRUD 接口 + RBAC
+import copy
 import json
 import uuid
 from datetime import datetime
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from loguru import logger
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from deps import (
     assert_same_group,
@@ -37,6 +41,8 @@ from models import (
 )
 import RuleEngine
 from router_auth import UserOut
+from glbclient import qdrant_client
+from UtilVector import chunk_text, get_embeddings
 
 router = APIRouter(prefix="/api", tags=["admin"])
 
@@ -46,6 +52,202 @@ router = APIRouter(prefix="/api", tags=["admin"])
 # =============================================================
 def _gen_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def _json_clone(value):
+    return copy.deepcopy(value)
+
+
+async def _reinsert_qdrant_kb_records(
+    source_collection: str,
+    target_collection: str,
+    *,
+    source_kb_id: str,
+    target_kb_id: str,
+) -> int:
+    """Reinsert KB vector records into a fresh isolated collection."""
+    logger.info(
+        "KB_SHARE_COPY start source_kb={} target_kb={} source_collection={} target_collection={}",
+        source_kb_id,
+        target_kb_id,
+        source_collection,
+        target_collection,
+    )
+
+    def _vector_size(vector) -> Optional[int]:
+        if isinstance(vector, dict):
+            for value in vector.values():
+                size = _vector_size(value)
+                if size:
+                    return size
+            return None
+        if isinstance(vector, list):
+            return len(vector)
+        return None
+
+    def _vectors_config_from_point_vector(vector):
+        if isinstance(vector, dict):
+            return {
+                name: VectorParams(size=_vector_size(value) or 1536, distance=Distance.COSINE)
+                for name, value in vector.items()
+            }
+        return VectorParams(size=_vector_size(vector) or 1536, distance=Distance.COSINE)
+
+    copied = 0
+    offset = None
+    collection_created = False
+    try:
+        while True:
+            points, offset = await qdrant_client.scroll(
+                collection_name=source_collection,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+
+            if not collection_created:
+                first_vector = next((point.vector for point in points if point.vector is not None), None)
+                vectors_config = _vectors_config_from_point_vector(first_vector)
+                await qdrant_client.create_collection(
+                    collection_name=target_collection,
+                    vectors_config=vectors_config,
+                )
+                collection_created = True
+                logger.info(
+                    "KB_SHARE_COPY target collection created source_collection={} target_collection={} vector_size={}",
+                    source_collection,
+                    target_collection,
+                    _vector_size(first_vector) or 1536,
+                )
+
+            if points:
+                point_structs = []
+                for point in points:
+                    if point.vector is None:
+                        continue
+                    payload = _json_clone(point.payload or {})
+                    payload["source_kb"] = target_kb_id
+                    point_structs.append(
+                        PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector=point.vector,
+                            payload=payload,
+                        )
+                    )
+                if point_structs:
+                    await qdrant_client.upsert(
+                        collection_name=target_collection,
+                        points=point_structs,
+                    )
+                    copied += len(point_structs)
+            if offset is None:
+                break
+    except Exception:
+        logger.exception(
+            "KB_SHARE_COPY failed source_kb={} target_kb={} source_collection={} target_collection={} copied={}",
+            source_kb_id,
+            target_kb_id,
+            source_collection,
+            target_collection,
+            copied,
+        )
+        if collection_created:
+            try:
+                await qdrant_client.delete_collection(collection_name=target_collection)
+            except Exception:
+                logger.exception("KB_SHARE_COPY cleanup failed target_collection={}", target_collection)
+        raise
+
+    logger.info(
+        "KB_SHARE_COPY done source_kb={} target_kb={} source_collection={} target_collection={} copied={}",
+        source_kb_id,
+        target_kb_id,
+        source_collection,
+        target_collection,
+        copied,
+    )
+    return copied
+
+
+async def _rebuild_qdrant_kb_from_raw_text(
+    raw_text: str,
+    target_collection: str,
+    *,
+    target_kb_id: str,
+    llm_client: AsyncOpenAI,
+) -> int:
+    """Build a fresh KB collection from the raw text stored in MySQL."""
+    logger.info(
+        "KB_SHARE_COPY rebuild_from_raw_text start target_kb={} target_collection={}",
+        target_kb_id,
+        target_collection,
+    )
+    collection_created = False
+    try:
+        chunks = await chunk_text(raw_text)
+        if not chunks:
+            raise ValueError("知识库原文为空或无法切片")
+
+        embeddings = await get_embeddings(llm_client, chunks)
+        vector_size = len(embeddings[0]) if embeddings else 1536
+        await qdrant_client.create_collection(
+            collection_name=target_collection,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+        collection_created = True
+
+        current_time = datetime.utcnow().isoformat()
+        points = [
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=emb,
+                payload={
+                    "text": chunk,
+                    "source_kb": target_kb_id,
+                    "added_at": current_time,
+                    "type": "share_copy",
+                },
+            )
+            for chunk, emb in zip(chunks, embeddings)
+        ]
+        if points:
+            await qdrant_client.upsert(collection_name=target_collection, points=points)
+
+        logger.info(
+            "KB_SHARE_COPY rebuild_from_raw_text done target_kb={} target_collection={} copied={}",
+            target_kb_id,
+            target_collection,
+            len(points),
+        )
+        return len(points)
+    except Exception:
+        logger.exception(
+            "KB_SHARE_COPY rebuild_from_raw_text failed target_kb={} target_collection={}",
+            target_kb_id,
+            target_collection,
+        )
+        if collection_created:
+            try:
+                await qdrant_client.delete_collection(collection_name=target_collection)
+            except Exception:
+                logger.exception("KB_SHARE_COPY cleanup failed target_collection={}", target_collection)
+        raise
+
+
+def _remap_rule_actions(actions: list, material_id_map: dict, source_group_id: str, target_group_id: str) -> list:
+    def _remap(value, key=None):
+        if isinstance(value, dict):
+            return {k: _remap(v, k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_remap(item) for item in value]
+        if key == "material_id" and value in material_id_map:
+            return material_id_map[value]
+        if key == "target_group_id" and value == source_group_id:
+            return target_group_id
+        return value
+
+    return _remap(_json_clone(actions or []))
 
 
 def _scope_org(stmt, user: User, model):
@@ -460,6 +662,65 @@ class ActivityOut(BaseModel):
         )
 
 
+class ActivityDetailMaterialOut(BaseModel):
+    id: str
+    group_id: Optional[str] = None
+    is_shared_to_groups: bool
+    activity_id: Optional[str] = None
+    kind: str
+    title: str
+    description: Optional[str] = None
+    media_url: Optional[str] = None
+    text_content: Optional[str] = None
+    dependency_reason: str
+
+
+class ActivityDetailKBOut(BaseModel):
+    kb_id: str
+    kb_name: Optional[str] = None
+    usage_guideline: Optional[str] = None
+    vector_collection_name: Optional[str] = None
+    raw_text_available: bool = False
+    raw_text_chars: int = 0
+    priority: int
+    mount_guideline: Optional[str] = None
+    group_id: Optional[str] = None
+    is_shared_to_groups: bool = False
+
+
+class ActivityDetailRuleOut(BaseModel):
+    id: str
+    name: str
+    activity_id: Optional[str] = None
+    scope: str
+    priority: int
+    is_active: bool
+    phase: str
+    conditions: dict
+    actions: List[dict]
+    fire_policy: str
+    short_circuit: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ActivityDetailSummaryOut(BaseModel):
+    stages: int
+    materials: int
+    kbs: int
+    activity_rules: int
+    global_rules: int
+
+
+class ActivityDetailOut(BaseModel):
+    activity: ActivityOut
+    group: Optional[GroupOut] = None
+    materials: List[ActivityDetailMaterialOut]
+    kb_mounts: List[ActivityDetailKBOut]
+    rules: List[ActivityDetailRuleOut]
+    summary: ActivityDetailSummaryOut
+
+
 @router.get("/orgs/{org_id}/activities", response_model=List[ActivityOut])
 async def list_activities(
     org_id: str,
@@ -472,6 +733,144 @@ async def list_activities(
         stmt = stmt.where(Activity.group_id == user.group_id)
     res = await db.execute(stmt)
     return [ActivityOut.from_orm_obj(a) for a in res.scalars().all()]
+
+
+def _collect_material_ids_from_actions(actions: Any) -> set[str]:
+    found: set[str] = set()
+
+    def _walk(value: Any, key: Optional[str] = None):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                _walk(v, k)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk(item, key)
+            return
+        if key == "material_id" and isinstance(value, str) and value:
+            found.add(value)
+
+    _walk(actions)
+    return found
+
+
+@router.get("/orgs/{org_id}/activities/{aid}/detail", response_model=ActivityDetailOut)
+async def get_activity_detail(
+    org_id: str,
+    aid: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    assert_same_org(user, org_id)
+    activity_res = await db.execute(select(Activity).where(Activity.id == aid, Activity.org_id == org_id))
+    activity = activity_res.scalar_one_or_none()
+    if not activity:
+        raise HTTPException(404, "活动不存在")
+    assert_same_group(user, activity.group_id)
+
+    group_res = await db.execute(select(Group).where(Group.id == activity.group_id, Group.org_id == org_id))
+    group = group_res.scalar_one_or_none()
+
+    rules_res = await db.execute(
+        select(ActivityEventRule)
+        .where(ActivityEventRule.org_id == org_id)
+        .where(
+            (ActivityEventRule.activity_id == aid)
+            | (ActivityEventRule.activity_id.is_(None))
+        )
+        .order_by(desc(ActivityEventRule.priority), desc(ActivityEventRule.created_at))
+    )
+    rules = rules_res.scalars().all()
+
+    material_ids = set()
+    for rule in rules:
+        material_ids.update(_collect_material_ids_from_actions(rule.actions or []))
+
+    material_stmt = select(Material).where(Material.org_id == org_id).where(Material.activity_id == aid)
+    if material_ids:
+        material_stmt = select(Material).where(Material.org_id == org_id).where(
+            or_(Material.activity_id == aid, Material.id.in_(material_ids))
+        )
+    material_res = await db.execute(material_stmt)
+    materials = []
+    for mat in material_res.scalars().all():
+        reasons = []
+        if mat.activity_id == aid:
+            reasons.append("activity")
+        if mat.id in material_ids:
+            reasons.append("rule_action")
+        materials.append(
+            ActivityDetailMaterialOut(
+                id=mat.id,
+                group_id=mat.group_id,
+                is_shared_to_groups=mat.is_shared_to_groups,
+                activity_id=mat.activity_id,
+                kind=mat.kind,
+                title=mat.title,
+                description=mat.description,
+                media_url=mat.media_url,
+                text_content=mat.text_content,
+                dependency_reason=",".join(reasons) or "activity",
+            )
+        )
+
+    kb_res = await db.execute(
+        select(KnowledgeBase, ActivityKBMount)
+        .join(ActivityKBMount, KnowledgeBase.id == ActivityKBMount.kb_id)
+        .where(ActivityKBMount.activity_id == aid)
+        .where(KnowledgeBase.org_id == org_id)
+        .order_by(desc(ActivityKBMount.priority))
+    )
+    kb_mounts = [
+        ActivityDetailKBOut(
+            kb_id=kb.id,
+            kb_name=kb.name,
+            usage_guideline=kb.usage_guideline,
+            vector_collection_name=kb.vector_collection_name,
+            raw_text_available=bool((kb.raw_text or "").strip()),
+            raw_text_chars=len(kb.raw_text or ""),
+            priority=mount.priority,
+            mount_guideline=mount.mount_guideline,
+            group_id=kb.group_id,
+            is_shared_to_groups=kb.is_shared_to_groups,
+        )
+        for kb, mount in kb_res.all()
+    ]
+
+    activity_rules = [r for r in rules if r.activity_id == aid]
+    global_rules = [r for r in rules if r.activity_id is None]
+    stages = ActivityOut.from_orm_obj(activity).stages_config or {}
+    return ActivityDetailOut(
+        activity=ActivityOut.from_orm_obj(activity),
+        group=group,
+        materials=materials,
+        kb_mounts=kb_mounts,
+        rules=[
+            ActivityDetailRuleOut(
+                id=rule.id,
+                name=rule.name,
+                activity_id=rule.activity_id,
+                scope="activity" if rule.activity_id == aid else "global",
+                priority=rule.priority,
+                is_active=rule.is_active,
+                phase=rule.phase,
+                conditions=rule.conditions or {},
+                actions=rule.actions or [],
+                fire_policy=rule.fire_policy,
+                short_circuit=rule.short_circuit,
+                created_at=rule.created_at,
+                updated_at=rule.updated_at,
+            )
+            for rule in rules
+        ],
+        summary=ActivityDetailSummaryOut(
+            stages=len(stages),
+            materials=len(materials),
+            kbs=len(kb_mounts),
+            activity_rules=len(activity_rules),
+            global_rules=len(global_rules),
+        ),
+    )
 
 
 @router.post("/orgs/{org_id}/activities", response_model=ActivityOut)
@@ -545,6 +944,206 @@ async def delete_activity(
     await db.delete(obj)
     await db.commit()
     return {"status": "ok"}
+
+
+class ActivityShareCopyIn(BaseModel):
+    target_group_id: str
+    name: Optional[str] = None
+
+
+class ActivityShareCopyOut(BaseModel):
+    source_activity_id: str
+    new_activity: ActivityOut
+    copied_materials: int
+    copied_kbs: int
+    copied_kb_points: int
+    skipped_kbs: int = 0
+    copied_rules: int
+    material_id_map: dict
+    kb_id_map: dict
+    skipped_kb_ids: list[str] = Field(default_factory=list)
+    rule_id_map: dict
+
+
+@router.post("/orgs/{org_id}/activities/{aid}/share-copy", response_model=ActivityShareCopyOut)
+async def share_copy_activity(
+    org_id: str,
+    aid: str,
+    body: ActivityShareCopyIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_min_role("org_admin")),
+):
+    """Copy one activity and its activity-scoped assets into another group.
+
+    The new activity is data-isolated: materials, mounted KB records/Qdrant
+    collections, mounts, and activity-specific rules all get new IDs.
+    """
+    assert_same_org(user, org_id)
+
+    source_res = await db.execute(select(Activity).where(Activity.id == aid, Activity.org_id == org_id))
+    source = source_res.scalar_one_or_none()
+    if not source:
+        raise HTTPException(404, "源活动不存在")
+
+    group_res = await db.execute(select(Group).where(Group.id == body.target_group_id, Group.org_id == org_id))
+    target_group = group_res.scalar_one_or_none()
+    if not target_group:
+        raise HTTPException(404, "目标组不存在或不属于本公司")
+
+    new_collections: list[str] = []
+    material_id_map: dict[str, str] = {}
+    kb_id_map: dict[str, str] = {}
+    rule_id_map: dict[str, str] = {}
+    skipped_kb_ids: list[str] = []
+    copied_kb_points = 0
+
+    try:
+        new_activity = Activity(
+            id=_gen_id("act"),
+            org_id=org_id,
+            group_id=body.target_group_id,
+            name=body.name or f"{source.name} 副本",
+            welcome_message=source.welcome_message,
+            closing_message=source.closing_message,
+            stages_config=source.stages_config,
+            global_guideline=source.global_guideline,
+        )
+        db.add(new_activity)
+
+        material_res = await db.execute(
+            select(Material).where(Material.org_id == org_id, Material.activity_id == source.id)
+        )
+        source_materials = material_res.scalars().all()
+        for mat in source_materials:
+            new_mid = f"mat_{uuid.uuid4().hex[:12]}"
+            material_id_map[mat.id] = new_mid
+            db.add(Material(
+                id=new_mid,
+                org_id=org_id,
+                group_id=body.target_group_id,
+                is_shared_to_groups=False,
+                activity_id=new_activity.id,
+                kind=mat.kind,
+                title=mat.title,
+                description=mat.description,
+                media_url=mat.media_url,
+                text_content=mat.text_content,
+            ))
+
+        mounts_res = await db.execute(
+            select(KnowledgeBase, ActivityKBMount)
+            .join(ActivityKBMount, KnowledgeBase.id == ActivityKBMount.kb_id)
+            .where(ActivityKBMount.activity_id == source.id)
+            .where(KnowledgeBase.org_id == org_id)
+        )
+        source_mounts = mounts_res.all()
+        main_settings = request.app.state.main_settings
+        llm_client = AsyncOpenAI(
+            api_key=main_settings.LLM_API_KEY,
+            base_url=main_settings.LLM_BASE_URL,
+        )
+        for kb, mount in source_mounts:
+            new_kb_id = f"kb_{uuid.uuid4().hex[:12]}"
+            new_collection = f"col_{org_id}_{new_kb_id}"
+            try:
+                if (kb.raw_text or "").strip():
+                    copied_points = await _rebuild_qdrant_kb_from_raw_text(
+                        kb.raw_text,
+                        new_collection,
+                        target_kb_id=new_kb_id,
+                        llm_client=llm_client,
+                    )
+                else:
+                    copied_points = await _reinsert_qdrant_kb_records(
+                        kb.vector_collection_name,
+                        new_collection,
+                        source_kb_id=kb.id,
+                        target_kb_id=new_kb_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "KB_SHARE_COPY skipped source_kb={} source_collection={} target_kb={} target_collection={}",
+                    kb.id,
+                    kb.vector_collection_name,
+                    new_kb_id,
+                    new_collection,
+                )
+                skipped_kb_ids.append(kb.id)
+                continue
+
+            kb_id_map[kb.id] = new_kb_id
+            db.add(KnowledgeBase(
+                id=new_kb_id,
+                name=kb.name,
+                usage_guideline=kb.usage_guideline,
+                raw_text=kb.raw_text,
+                org_id=org_id,
+                group_id=body.target_group_id,
+                is_shared_to_groups=False,
+                vector_collection_name=new_collection,
+            ))
+            db.add(ActivityKBMount(
+                activity_id=new_activity.id,
+                kb_id=new_kb_id,
+                priority=mount.priority,
+                mount_guideline=mount.mount_guideline,
+            ))
+            copied_kb_points += copied_points
+            new_collections.append(new_collection)
+
+        rules_res = await db.execute(
+            select(ActivityEventRule).where(
+                ActivityEventRule.org_id == org_id,
+                ActivityEventRule.activity_id == source.id,
+            )
+        )
+        source_rules = rules_res.scalars().all()
+        for rule in source_rules:
+            new_rule_id = _gen_id("rule")
+            rule_id_map[rule.id] = new_rule_id
+            db.add(ActivityEventRule(
+                id=new_rule_id,
+                org_id=org_id,
+                activity_id=new_activity.id,
+                name=rule.name,
+                priority=rule.priority,
+                is_active=rule.is_active,
+                phase=rule.phase,
+                conditions=_json_clone(rule.conditions),
+                actions=_remap_rule_actions(
+                    rule.actions,
+                    material_id_map,
+                    source.group_id,
+                    body.target_group_id,
+                ),
+                fire_policy=rule.fire_policy,
+                short_circuit=rule.short_circuit,
+            ))
+
+        await db.commit()
+        await db.refresh(new_activity)
+        return ActivityShareCopyOut(
+            source_activity_id=source.id,
+            new_activity=ActivityOut.from_orm_obj(new_activity),
+            copied_materials=len(material_id_map),
+            copied_kbs=len(kb_id_map),
+            copied_kb_points=copied_kb_points,
+            skipped_kbs=len(skipped_kb_ids),
+            copied_rules=len(rule_id_map),
+            material_id_map=material_id_map,
+            kb_id_map=kb_id_map,
+            skipped_kb_ids=skipped_kb_ids,
+            rule_id_map=rule_id_map,
+        )
+    except Exception:
+        await db.rollback()
+        for collection in new_collections:
+            try:
+                await qdrant_client.delete_collection(collection_name=collection)
+            except Exception:
+                pass
+        raise
 
 
 # =============================================================
@@ -840,9 +1439,10 @@ async def send_session_message(
     # 坐席发的消息必须下发到访客 WS 窗口 (接管态下没有 LLM 帮忙推送了)。
     # 同时写 Mem0, 与 /agent-reply 行为一致。失败只记日志, 不阻塞 API。
     try:
-        from main import visitor_memory_layer, manager as visitor_manager
+        from main import manager as visitor_manager
+        from memory_service import memory_add
         if sess.visitor_uid and text:
-            visitor_memory_layer.add(
+            await memory_add(
                 [{"role": "assistant", "content": text}],
                 user_id=sess.visitor_uid,
             )
@@ -1402,10 +2002,11 @@ async def agent_reply(
 
     # 写 Mem0 + WS push 给访客 (异步, 失败不阻塞 API)
     try:
-        from main import visitor_memory_layer, manager as visitor_manager
+        from main import manager as visitor_manager
+        from memory_service import memory_add
         # 仅文本进 Mem0 (媒体 URL 无记忆价值)
         if sess.visitor_uid and content_type == "text" and text:
-            visitor_memory_layer.add(
+            await memory_add(
                 [{"role": "assistant", "content": text}],
                 user_id=sess.visitor_uid,
             )

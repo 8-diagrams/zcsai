@@ -6,7 +6,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 #from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 from sqlalchemy import String, Text, Integer, Boolean, select, update
-from mem0 import Memory
 from openai import AsyncOpenAI
 import sys
 from loguru import logger
@@ -19,6 +18,7 @@ from UtilLLM import generate_ai_reply_with_retry
 
 import UtilRAG #import retrieve_rag_context
 import UtilMem
+from memory_service import memory_add, memory_search
 
 #move to config.py
 from config import settings, YQrequirement, to_public_url
@@ -129,39 +129,6 @@ llm_client = AsyncOpenAI(
     api_key=settings.LLM_API_KEY,
     base_url=settings.LLM_BASE_URL
 )
-
-mem0_llm_model = 'gpt-4o-mini'
-
-mem0_config = {
-    "vector_store": {
-        "provider": "qdrant",
-        "config": {
-            "collection_name": "saas_visitor_memories",
-            "path": settings.MEMORY_DB_PATH 
-        }
-    },
-    "llm": {
-        "provider": "openai",
-        "config": {
-            "api_key": settings.LLM_API_KEY,
-            # 如果你用的是国内代理或私有部署，需要把 base_url 也传给它
-            "openai_base_url": settings.LLM_BASE_URL, 
-            "model": mem0_llm_model,
-            "temperature": 0.1
-        }
-    },
-    "embedder": {
-        "provider": "openai",
-        "config": {
-            "api_key": settings.LLM_API_KEY,
-            "openai_base_url": settings.LLM_BASE_URL,
-            # 默认使用 OpenAI 的小模型作为向量转化器，极便宜
-            "model": settings.LLM_EMBEDDING_MODEL, 
-        }
-    }
-}
-
-visitor_memory_layer = Memory.from_config(mem0_config)
 
 # ==========================================
 # 4. WebSocket 连接管理器
@@ -396,7 +363,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             if sess.is_human_takeover:
                 log.info(f"Session {session_id} 🤝 已被员工 {sess.human_takeover_by} 接管 (at={sess.human_takeover_at})，跳过 LLM 推理")
                 try:
-                    visitor_memory_layer.add(
+                    await memory_add(
                         [{"role": "user", "content": visitor_msg}],
                         user_id=visitor_uid,
                     )
@@ -482,7 +449,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             t0 = time.perf_counter()
             log.debug(f"Session {session_id} 正在调用 Mem0 检索长期记忆...")
             try:
-                relevant_memories = visitor_memory_layer.search(query=visitor_msg, filters={"user_id": visitor_uid} )
+                relevant_memories = await memory_search(query=visitor_msg, filters={"user_id": visitor_uid})
                 memory_context = UtilMem.ProcMem( relevant_memories , log=log)
                 log.success(f"Session {session_id} 💡 唤醒记忆成功，条数: {len(relevant_memories)}")
             except Exception as me:
@@ -715,7 +682,7 @@ async def process_ai_reply(connection_id: str, session_id: str, visitor_msg: str
             log.debug("🧠 正在将本轮对话喂给 Mem0 进行画像提取...")
             try:
                 # 把用户说的话和 AI 的回复一起扔给 Mem0，它会在后台自动提取并更新画像
-                visitor_memory_layer.add(
+                await memory_add(
                     [
                         {"role": "user", "content": visitor_msg}, 
                         {"role": "assistant", "content": ai_reply_text}
@@ -893,7 +860,7 @@ async def process_history_import(
             # D. 历史对话写 Mem0(仅本次新增的, 避免重复刻录)
             if mem_msgs:
                 try:
-                    visitor_memory_layer.add(mem_msgs, user_id=visitor_uid)
+                    await memory_add(mem_msgs, user_id=visitor_uid)
                     log.success(f"📜 [历史导入] {len(mem_msgs)} 条历史已写入 Mem0")
                 except Exception as e:
                     log.warning(f"📜 [历史导入] Mem0 写入失败: {e}")

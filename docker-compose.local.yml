@@ -1,0 +1,22 @@
+# Local development overrides for scripts/compose-local.sh.
+# Do not use this file for production.
+
+services:
+  mysql:
+    ports:
+      - "3307:3306"
+
+  qdrant:
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+
+  backend:
+    environment:
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+    volumes:
+      - ./.env.docker.local:/app/.env:ro
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    ports:
+      - "1081:1081"
