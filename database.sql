@@ -152,7 +152,7 @@ CREATE TABLE `activity_kb_mounts` (
   `mount_guideline` text COLLATE utf8mb4_unicode_ci COMMENT '挂载维度的特别指引 (当该活动挂载此库时特有的AI提示词，可覆盖或补充主库指引)',
   PRIMARY KEY (`activity_id`,`kb_id`),
   KEY `idx_kb_id` (`kb_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动与知识库挂载关系表'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动与知识库挂载关系表';
 
 CREATE TABLE `knowledge_bases` (
   `id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '知识库全局唯一ID',
@@ -166,7 +166,7 @@ CREATE TABLE `knowledge_bases` (
   PRIMARY KEY (`id`),
   KEY `idx_org_id` (`org_id`),
   KEY `idx_group_id` (`group_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='多租户知识库管理表'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='多租户知识库管理表';
 
 
 -- 2. 修改 Sessions 表，增加 activity 绑定和当前阶段状态
